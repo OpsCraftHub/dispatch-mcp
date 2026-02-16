@@ -6,22 +6,63 @@ can read and manage projects, Ops, and packets.
 
 import json
 import os
+import time
 from typing import Any
 
 import httpx
 from mcp.server.fastmcp import FastMCP
 
 BOARD_URL = os.getenv("BOARD_URL", "https://dispatch.opscraft.cc/api/v1")
-BOARD_TOKEN = os.getenv("BOARD_TOKEN", "")  # Keycloak JWT if needed
+BOARD_TOKEN = os.getenv("BOARD_TOKEN", "")  # Static token fallback
+
+# Keycloak auto-auth (set these for production)
+KC_URL = os.getenv("KEYCLOAK_URL", "")
+KC_REALM = os.getenv("KEYCLOAK_REALM", "opscraft")
+KC_CLIENT_ID = os.getenv("KEYCLOAK_CLIENT_ID", "mr-fusion-frontend")
+KC_USERNAME = os.getenv("KEYCLOAK_USERNAME", "")
+KC_PASSWORD = os.getenv("KEYCLOAK_PASSWORD", "")
 
 mcp = FastMCP("dispatch")
+
+# ── Keycloak token cache ─────────────────────────────────────
+
+_token_cache: dict[str, Any] = {"access_token": "", "expires_at": 0}
+
+
+async def _get_token() -> str:
+    """Return a valid Bearer token. Uses Keycloak password grant if configured, else static token."""
+    if not KC_URL or not KC_USERNAME:
+        return BOARD_TOKEN
+
+    if _token_cache["access_token"] and time.time() < _token_cache["expires_at"] - 30:
+        return _token_cache["access_token"]
+
+    token_url = f"{KC_URL}/realms/{KC_REALM}/protocol/openid-connect/token"
+    async with httpx.AsyncClient() as c:
+        r = await c.post(token_url, data={
+            "grant_type": "password",
+            "client_id": KC_CLIENT_ID,
+            "username": KC_USERNAME,
+            "password": KC_PASSWORD,
+        }, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+
+    _token_cache["access_token"] = data["access_token"]
+    _token_cache["expires_at"] = time.time() + data.get("expires_in", 300)
+    return data["access_token"]
+
+
+async def _auth_headers() -> dict[str, str]:
+    token = await _get_token()
+    return {"Authorization": f"Bearer {token}"} if token else {}
 
 
 # ── HTTP helpers ─────────────────────────────────────────────
 
 
 async def _get(path: str, params: dict | None = None) -> Any:
-    headers = {"Authorization": f"Bearer {BOARD_TOKEN}"} if BOARD_TOKEN else {}
+    headers = await _auth_headers()
     async with httpx.AsyncClient() as c:
         r = await c.get(f"{BOARD_URL}{path}", params=params, headers=headers, timeout=30)
         r.raise_for_status()
@@ -30,8 +71,7 @@ async def _get(path: str, params: dict | None = None) -> Any:
 
 async def _post(path: str, body: dict | None = None) -> Any:
     headers = {"Content-Type": "application/json"}
-    if BOARD_TOKEN:
-        headers["Authorization"] = f"Bearer {BOARD_TOKEN}"
+    headers.update(await _auth_headers())
     async with httpx.AsyncClient() as c:
         r = await c.post(f"{BOARD_URL}{path}", json=body or {}, headers=headers, timeout=30)
         r.raise_for_status()
@@ -40,8 +80,7 @@ async def _post(path: str, body: dict | None = None) -> Any:
 
 async def _put(path: str, body: dict | None = None) -> Any:
     headers = {"Content-Type": "application/json"}
-    if BOARD_TOKEN:
-        headers["Authorization"] = f"Bearer {BOARD_TOKEN}"
+    headers.update(await _auth_headers())
     async with httpx.AsyncClient() as c:
         r = await c.put(f"{BOARD_URL}{path}", json=body or {}, headers=headers, timeout=30)
         r.raise_for_status()
@@ -49,9 +88,7 @@ async def _put(path: str, body: dict | None = None) -> Any:
 
 
 async def _delete(path: str) -> str:
-    headers = {}
-    if BOARD_TOKEN:
-        headers["Authorization"] = f"Bearer {BOARD_TOKEN}"
+    headers = await _auth_headers()
     async with httpx.AsyncClient() as c:
         r = await c.delete(f"{BOARD_URL}{path}", headers=headers, timeout=30)
         r.raise_for_status()
