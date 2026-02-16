@@ -198,7 +198,11 @@ async def get_task(task_id: str) -> str:
         for c in data["acceptance_criteria"]:
             if isinstance(c, dict):
                 check = "x" if c.get("checked") else " "
-                lines.append(f"  [{check}] {c.get('text', '')}")
+                extra = ""
+                if c.get("delegated_to_name"):
+                    status = c.get("linked_task_status", "pending")
+                    extra = f" → {c['delegated_to_name']} [{status}]"
+                lines.append(f"  [{check}] {c.get('text', '')}{extra}")
             else:
                 lines.append(f"  [ ] {c}")
     if data.get("tags"):
@@ -329,7 +333,8 @@ async def create_task(
 
 @mcp.tool()
 async def move_task(task_id: str, to_status: str) -> str:
-    """Move a packet to a new workflow status.
+    """Move a packet to a new workflow status. For common transitions prefer
+    the dedicated tools: groom_and_ready, submit_for_review, complete_task.
 
     Args:
         task_id: UUID of the task
@@ -337,6 +342,100 @@ async def move_task(task_id: str, to_status: str) -> str:
     """
     data = await _put(f"/tasks/{task_id}/move", {"to_status": to_status})
     return f"Moved '{data['title']}' to {data['workflow_status']}"
+
+
+@mcp.tool()
+async def groom_and_ready(
+    task_id: str,
+    description: str = "",
+    acceptance_criteria: list[str] | None = None,
+    priority: str = "",
+    assignee: str = "",
+) -> str:
+    """Groom a packet and move it from triage to ready.
+
+    Updates whichever fields are provided, then advances to ready.
+    Small tasks don't need every field — just provide what makes sense.
+
+    Args:
+        task_id: UUID of the task
+        description: Detailed description of what needs doing
+        acceptance_criteria: List of acceptance criteria strings (e.g. ["API returns 200", "Tests pass"])
+        priority: low, medium, high, critical
+        assignee: User ID to assign to
+    """
+    body: dict[str, Any] = {}
+    if description:
+        body["description"] = description
+    if acceptance_criteria:
+        body["acceptance_criteria"] = [{"text": t, "checked": False} for t in acceptance_criteria]
+    if priority:
+        body["priority"] = priority
+    if assignee:
+        body["assignee"] = assignee
+    if body:
+        await _put(f"/tasks/{task_id}", body)
+    data = await _put(f"/tasks/{task_id}/move", {"to_status": "ready"})
+    parts = [f"Groomed and moved '{data['title']}' to ready"]
+    if description:
+        parts.append("description updated")
+    if acceptance_criteria:
+        parts.append(f"{len(acceptance_criteria)} criteria set")
+    if assignee:
+        parts.append(f"assigned to {data.get('assignee_name', assignee)}")
+    return " — ".join(parts)
+
+
+@mcp.tool()
+async def submit_for_review(
+    task_id: str,
+    summary: str = "",
+    commit_sha: str = "",
+) -> str:
+    """Move a packet to review, optionally logging work done and commit SHA.
+
+    Args:
+        task_id: UUID of the task
+        summary: Brief description of work completed
+        commit_sha: Git commit SHA (if this was a code task)
+    """
+    if summary or commit_sha:
+        parts = []
+        if summary:
+            parts.append(summary)
+        if commit_sha:
+            parts.append(f"Commit: {commit_sha}")
+        await _post(f"/tasks/{task_id}/comment", {"body": "\n".join(parts)})
+    data = await _put(f"/tasks/{task_id}/move", {"to_status": "review"})
+    return f"'{data['title']}' submitted for review"
+
+
+@mcp.tool()
+async def complete_task(
+    task_id: str,
+    summary: str = "",
+    commit_sha: str = "",
+) -> str:
+    """Complete a packet — adds a closing comment and moves to done.
+
+    Works for any task: code tasks can include a commit SHA,
+    non-code tasks (e.g. 'book doctors appointment') just get a summary.
+    If no summary is provided the task is simply moved to done.
+
+    Args:
+        task_id: UUID of the task
+        summary: What was done / outcome
+        commit_sha: Git commit SHA (optional, only for code tasks)
+    """
+    if summary or commit_sha:
+        parts = []
+        if summary:
+            parts.append(summary)
+        if commit_sha:
+            parts.append(f"Commit: {commit_sha}")
+        await _post(f"/tasks/{task_id}/comment", {"body": "\n".join(parts)})
+    data = await _put(f"/tasks/{task_id}/move", {"to_status": "done"})
+    return f"Completed '{data['title']}'"
 
 
 @mcp.tool()
@@ -532,6 +631,44 @@ async def finalise_op(op_id: str) -> str:
     """
     data = await _put(f"/sub-projects/{op_id}/finalise")
     return f"Finalised '{data['name']}' — status: {data['status']}"
+
+
+@mcp.tool()
+async def delegate_criterion(task_id: str, criterion_index: int, user_id: str) -> str:
+    """Delegate an acceptance criterion on a packet to another user.
+
+    Spawns a new packet assigned to that user with the criterion text.
+    When the spawned packet reaches done, the criterion auto-checks.
+
+    Args:
+        task_id: UUID of the parent task
+        criterion_index: Zero-based index of the criterion to delegate
+        user_id: UUID of the user to delegate to
+    """
+    data = await _post(
+        f"/tasks/{task_id}/criteria/{criterion_index}/delegate",
+        {"user_id": user_id},
+    )
+    return f"Delegated to {data.get('assignee_name', user_id)} — spawned packet '{data['title']}' (id: {data['id']})"
+
+
+@mcp.tool()
+async def delegate_op_criterion(op_id: str, criterion_index: int, user_id: str) -> str:
+    """Delegate an acceptance criterion on an Op to another user.
+
+    Spawns a new packet assigned to that user with the criterion text.
+    When the spawned packet reaches done, the criterion auto-checks.
+
+    Args:
+        op_id: UUID of the Op (sub-project)
+        criterion_index: Zero-based index of the criterion to delegate
+        user_id: UUID of the user to delegate to
+    """
+    data = await _post(
+        f"/sub-projects/{op_id}/criteria/{criterion_index}/delegate",
+        {"user_id": user_id},
+    )
+    return f"Delegated to {data.get('assignee_name', user_id)} — spawned packet '{data['title']}' (id: {data['id']})"
 
 
 if __name__ == "__main__":
