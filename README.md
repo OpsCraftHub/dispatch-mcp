@@ -25,7 +25,7 @@ Add to your project's `.mcp.json`:
         "python", "/path/to/dispatch-mcp/server.py"
       ],
       "env": {
-        "BOARD_URL": "http://localhost:8003/api/v1"
+        "BOARD_URL": "https://dispatch.opscraft.cc/api/v1"
       }
     }
   }
@@ -56,7 +56,7 @@ Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_
         "python", "/path/to/dispatch-mcp/server.py"
       ],
       "env": {
-        "BOARD_URL": "http://localhost:8003/api/v1"
+        "BOARD_URL": "https://dispatch.opscraft.cc/api/v1"
       }
     }
   }
@@ -67,7 +67,7 @@ Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `BOARD_URL` | Yes | `http://localhost:8003/api/v1` | Board service API base URL |
+| `BOARD_URL` | No | `https://dispatch.opscraft.cc/api/v1` | Board service API base URL |
 | `BOARD_TOKEN` | No | — | Keycloak JWT for authenticated access. Not needed if Board runs in dev mode |
 
 ### Authentication

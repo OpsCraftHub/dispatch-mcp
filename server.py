@@ -11,7 +11,7 @@ from typing import Any
 import httpx
 from mcp.server.fastmcp import FastMCP
 
-BOARD_URL = os.getenv("BOARD_URL", "http://localhost:8003/api/v1")
+BOARD_URL = os.getenv("BOARD_URL", "https://dispatch.opscraft.cc/api/v1")
 BOARD_TOKEN = os.getenv("BOARD_TOKEN", "")  # Keycloak JWT if needed
 
 mcp = FastMCP("dispatch")
