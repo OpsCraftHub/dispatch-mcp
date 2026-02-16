@@ -239,6 +239,8 @@ async def get_task(task_id: str) -> str:
         lines.append(f"Op: {data.get('sub_project_id')}")
     if data.get("is_blocked"):
         lines.append(f"BLOCKED: {data.get('blocked_reason', '')}")
+    if data.get("estimate"):
+        lines.append(f"Estimate: {data['estimate'].upper()} (~{data.get('estimate_hours', '?')}h)")
     if data.get("scope_flag"):
         lines.append(f"Scope: {data['scope_flag']}")
     if data.get("description"):
@@ -353,8 +355,16 @@ async def create_task(
     priority: str = "medium",
     op_id: str = "",
     as_draft: bool = False,
+    estimate: str = "",
 ) -> str:
     """Create a new packet (task) in a project.
+
+    When creating tasks, always include an estimate based on complexity:
+      xs (~30min) — trivial config change, typo fix, one-liner
+      s  (~2hrs)  — small bug fix, minor feature, simple endpoint
+      m  (~4hrs)  — standard feature, half-day task
+      l  (~8hrs)  — significant feature, full-day task
+      xl (~16hrs) — large feature, major refactor, multi-day task
 
     Args:
         project_id: UUID of the project
@@ -363,6 +373,7 @@ async def create_task(
         priority: low, medium, high, critical
         op_id: Optional Op (sub-project) ID to assign to
         as_draft: If true, creates in draft state for review
+        estimate: T-shirt size estimate: xs, s, m, l, xl — always set this based on task complexity
     """
     body: dict[str, Any] = {
         "title": title,
@@ -372,6 +383,8 @@ async def create_task(
         body["description"] = description
     if as_draft:
         body["workflow_status"] = "draft"
+    if estimate:
+        body["estimate"] = estimate
 
     if op_id:
         data = await _post(f"/sub-projects/{op_id}/tasks", body)
@@ -401,11 +414,19 @@ async def groom_and_ready(
     acceptance_criteria: list[str] | None = None,
     priority: str = "",
     assignee: str = "",
+    estimate: str = "",
 ) -> str:
     """Groom a packet and move it from triage to ready.
 
     Updates whichever fields are provided, then advances to ready.
     Small tasks don't need every field — just provide what makes sense.
+
+    IMPORTANT: Always provide an estimate when grooming. Use t-shirt sizes:
+      xs (~30min) — trivial config change, typo fix, one-liner
+      s  (~2hrs)  — small bug fix, minor feature, simple endpoint
+      m  (~4hrs)  — standard feature, half-day task
+      l  (~8hrs)  — significant feature, full-day task
+      xl (~16hrs) — large feature, major refactor, multi-day task
 
     Args:
         task_id: UUID of the task
@@ -413,6 +434,7 @@ async def groom_and_ready(
         acceptance_criteria: List of acceptance criteria strings (e.g. ["API returns 200", "Tests pass"])
         priority: low, medium, high, critical
         assignee: User ID to assign to
+        estimate: T-shirt size estimate: xs, s, m, l, xl — always set this based on task complexity
     """
     body: dict[str, Any] = {}
     if description:
@@ -423,6 +445,8 @@ async def groom_and_ready(
         body["priority"] = priority
     if assignee:
         body["assignee"] = assignee
+    if estimate:
+        body["estimate"] = estimate
     if body:
         await _put(f"/tasks/{task_id}", body)
     data = await _put(f"/tasks/{task_id}/move", {"to_status": "ready"})
@@ -553,14 +577,19 @@ async def update_task(
     title: str = "",
     description: str = "",
     priority: str = "",
+    estimate: str = "",
 ) -> str:
-    """Update a packet's title, description, or priority.
+    """Update a packet's title, description, priority, or estimate.
+
+    If a task has no estimate, set one based on complexity:
+      xs (~30min), s (~2hrs), m (~4hrs), l (~8hrs), xl (~16hrs)
 
     Args:
         task_id: UUID of the task
         title: New title (leave empty to keep current)
         description: New description (leave empty to keep current)
         priority: New priority: low, medium, high, critical (leave empty to keep current)
+        estimate: T-shirt size estimate: xs, s, m, l, xl (leave empty to keep current)
     """
     body: dict[str, Any] = {}
     if title:
@@ -569,6 +598,8 @@ async def update_task(
         body["description"] = description
     if priority:
         body["priority"] = priority
+    if estimate:
+        body["estimate"] = estimate
     if not body:
         return "Nothing to update — provide at least one field."
     data = await _put(f"/tasks/{task_id}", body)
