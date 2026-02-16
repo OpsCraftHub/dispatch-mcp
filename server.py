@@ -61,11 +61,21 @@ async def _auth_headers() -> dict[str, str]:
 # ── HTTP helpers ─────────────────────────────────────────────
 
 
+def _error_detail(r: httpx.Response) -> str:
+    """Extract a human-readable error from an HTTP response."""
+    try:
+        data = r.json()
+        return data.get("detail", data.get("error", str(data)))
+    except Exception:
+        return r.text[:200] if r.text else f"HTTP {r.status_code}"
+
+
 async def _get(path: str, params: dict | None = None) -> Any:
     headers = await _auth_headers()
     async with httpx.AsyncClient() as c:
         r = await c.get(f"{BOARD_URL}{path}", params=params, headers=headers, timeout=30)
-        r.raise_for_status()
+        if not r.is_success:
+            raise Exception(f"Client error '{r.status_code} {r.reason_phrase}' for url '{r.url}'\n{_error_detail(r)}")
         return r.json()
 
 
@@ -74,7 +84,8 @@ async def _post(path: str, body: dict | None = None) -> Any:
     headers.update(await _auth_headers())
     async with httpx.AsyncClient() as c:
         r = await c.post(f"{BOARD_URL}{path}", json=body or {}, headers=headers, timeout=30)
-        r.raise_for_status()
+        if not r.is_success:
+            raise Exception(f"Client error '{r.status_code} {r.reason_phrase}' for url '{r.url}'\n{_error_detail(r)}")
         return r.json()
 
 
@@ -83,7 +94,8 @@ async def _put(path: str, body: dict | None = None) -> Any:
     headers.update(await _auth_headers())
     async with httpx.AsyncClient() as c:
         r = await c.put(f"{BOARD_URL}{path}", json=body or {}, headers=headers, timeout=30)
-        r.raise_for_status()
+        if not r.is_success:
+            raise Exception(f"Client error '{r.status_code} {r.reason_phrase}' for url '{r.url}'\n{_error_detail(r)}")
         return r.json()
 
 
@@ -91,7 +103,8 @@ async def _delete(path: str) -> str:
     headers = await _auth_headers()
     async with httpx.AsyncClient() as c:
         r = await c.delete(f"{BOARD_URL}{path}", headers=headers, timeout=30)
-        r.raise_for_status()
+        if not r.is_success:
+            raise Exception(f"Client error '{r.status_code} {r.reason_phrase}' for url '{r.url}'\n{_error_detail(r)}")
         return "ok"
 
 
