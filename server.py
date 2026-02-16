@@ -537,7 +537,14 @@ async def assign_to_op(task_id: str, op_id: str) -> str:
 
 
 @mcp.tool()
-async def create_op(project_id: str, name: str, description: str = "", objective: str = "") -> str:
+async def create_op(
+    project_id: str,
+    name: str,
+    description: str = "",
+    objective: str = "",
+    repos: list[dict[str, str]] | None = None,
+    technical_notes: str = "",
+) -> str:
     """Create a new Op (deliverable) in a project.
 
     Args:
@@ -545,14 +552,133 @@ async def create_op(project_id: str, name: str, description: str = "", objective
         name: Op name
         description: Optional description
         objective: Optional objective statement
+        repos: Optional list of repo refs, each with url, name, purpose
+        technical_notes: Optional technical notes
     """
     body: dict[str, Any] = {"name": name}
     if description:
         body["description"] = description
     if objective:
         body["objective"] = objective
+    if repos:
+        body["repos"] = repos
+    if technical_notes:
+        body["technical_notes"] = technical_notes
     data = await _post(f"/projects/{project_id}/sub-projects", body)
     return f"Created Op: {data['name']} (id: {data['id']})"
+
+
+@mcp.tool()
+async def get_op(op_id: str) -> str:
+    """Get full details of an Op (sub-project) including repos, notes, and criteria.
+
+    Args:
+        op_id: UUID of the Op
+    """
+    data = await _get(f"/sub-projects/{op_id}")
+    lines = [
+        f"# {data['name']}",
+        f"Status: {data['status']} | Progress: {data.get('progress_pct', 0)}% ({data.get('done_tasks', 0)}/{data.get('total_tasks', 0)})",
+    ]
+    if data.get("approved_at"):
+        lines.append(f"Approved: baseline {data.get('baseline_task_count', 0)} packets")
+    if data.get("description"):
+        lines.append(f"\n## Description\n{data['description']}")
+    if data.get("objective"):
+        lines.append(f"\n## Objective\n{data['objective']}")
+    if data.get("acceptance_criteria"):
+        lines.append("\n## Acceptance Criteria")
+        for c in data["acceptance_criteria"]:
+            if isinstance(c, dict):
+                check = "x" if c.get("checked") else " "
+                extra = ""
+                if c.get("delegated_to_name"):
+                    status = c.get("linked_task_status", "pending")
+                    extra = f" → {c['delegated_to_name']} [{status}]"
+                lines.append(f"  [{check}] {c.get('text', '')}{extra}")
+            else:
+                lines.append(f"  [ ] {c}")
+    if data.get("repos"):
+        lines.append("\n## Repositories")
+        for r in data["repos"]:
+            purpose = f" — {r['purpose']}" if r.get("purpose") else ""
+            lines.append(f"  - {r.get('name', 'repo')}: {r.get('url', '')}{purpose}")
+    if data.get("technical_notes"):
+        lines.append(f"\n## Technical Notes\n{data['technical_notes']}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def update_op(
+    op_id: str,
+    name: str = "",
+    description: str = "",
+    objective: str = "",
+    repos: list[dict[str, str]] | None = None,
+    technical_notes: str = "",
+) -> str:
+    """Update an Op's name, description, objective, repos, or technical notes.
+
+    Args:
+        op_id: UUID of the Op
+        name: New name (leave empty to keep current)
+        description: New description (leave empty to keep current)
+        objective: New objective (leave empty to keep current)
+        repos: New repo list, each with url, name, purpose (omit to keep current)
+        technical_notes: New technical notes (leave empty to keep current)
+    """
+    body: dict[str, Any] = {}
+    if name:
+        body["name"] = name
+    if description:
+        body["description"] = description
+    if objective:
+        body["objective"] = objective
+    if repos is not None:
+        body["repos"] = repos
+    if technical_notes:
+        body["technical_notes"] = technical_notes
+    if not body:
+        return "Nothing to update — provide at least one field."
+    data = await _put(f"/sub-projects/{op_id}", body)
+    return f"Updated Op: {data['name']}"
+
+
+# ── Local repo path tracking ────────────────────────────────
+
+LOCAL_REPOS_FILE = os.path.expanduser("~/.dispatch/local_repos.json")
+
+
+def _load_local_repos() -> dict[str, str]:
+    try:
+        with open(LOCAL_REPOS_FILE) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _save_local_repos(data: dict[str, str]) -> None:
+    os.makedirs(os.path.dirname(LOCAL_REPOS_FILE), exist_ok=True)
+    with open(LOCAL_REPOS_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+
+@mcp.tool()
+async def set_repo_local_path(op_id: str, repo_url: str, local_path: str) -> str:
+    """Record where a repo is cloned locally for an Op.
+
+    This lets other tools know the local path for a given repo.
+
+    Args:
+        op_id: UUID of the Op
+        repo_url: The repo URL (must match one in the Op's repos list)
+        local_path: Absolute path to the local clone
+    """
+    repos = _load_local_repos()
+    key = f"{op_id}:{repo_url}"
+    repos[key] = local_path
+    _save_local_repos(repos)
+    return f"Saved: {repo_url} → {local_path}"
 
 
 @mcp.tool()
@@ -750,6 +876,28 @@ async def delegate_op_criterion(op_id: str, criterion_index: int, user_id: str) 
         {"user_id": user_id},
     )
     return f"Delegated to {data.get('assignee_name', user_id)} — spawned packet '{data['title']}' (id: {data['id']})"
+
+
+@mcp.tool()
+async def list_op_documents(op_id: str) -> str:
+    """List documents attached to an Op (sub-project).
+
+    Use this to see what briefs, specs, or contracts are attached to an Op
+    before creating or grooming tasks.
+
+    Args:
+        op_id: UUID of the Op
+    """
+    data = await _get(f"/sub-projects/{op_id}/attachments")
+    docs = data if isinstance(data, list) else []
+    if not docs:
+        return "No documents attached to this Op."
+    lines = [f"{len(docs)} document(s):"]
+    for d in docs:
+        size = d.get("size_bytes", 0)
+        size_str = f"{size // 1024}KB" if size and size >= 1024 else f"{size}B" if size else ""
+        lines.append(f"  - {d['filename']} ({d.get('content_type', 'unknown')}, {size_str}) [id: {d['id']}]")
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":
