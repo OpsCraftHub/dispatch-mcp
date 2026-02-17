@@ -542,8 +542,6 @@ async def create_op(
     name: str,
     description: str = "",
     objective: str = "",
-    repos: list[dict[str, str]] | None = None,
-    technical_notes: str = "",
 ) -> str:
     """Create a new Op (deliverable) in a project.
 
@@ -552,18 +550,12 @@ async def create_op(
         name: Op name
         description: Optional description
         objective: Optional objective statement
-        repos: Optional list of repo refs, each with url, name, purpose
-        technical_notes: Optional technical notes
     """
     body: dict[str, Any] = {"name": name}
     if description:
         body["description"] = description
     if objective:
         body["objective"] = objective
-    if repos:
-        body["repos"] = repos
-    if technical_notes:
-        body["technical_notes"] = technical_notes
     data = await _post(f"/projects/{project_id}/sub-projects", body)
     return f"Created Op: {data['name']} (id: {data['id']})"
 
@@ -598,11 +590,6 @@ async def get_op(op_id: str) -> str:
                 lines.append(f"  [{check}] {c.get('text', '')}{extra}")
             else:
                 lines.append(f"  [ ] {c}")
-    if data.get("repos"):
-        lines.append("\n## Repositories")
-        for r in data["repos"]:
-            purpose = f" — {r['purpose']}" if r.get("purpose") else ""
-            lines.append(f"  - {r.get('name', 'repo')}: {r.get('url', '')}{purpose}")
     if data.get("technical_notes"):
         lines.append(f"\n## Technical Notes\n{data['technical_notes']}")
     return "\n".join(lines)
@@ -614,17 +601,15 @@ async def update_op(
     name: str = "",
     description: str = "",
     objective: str = "",
-    repos: list[dict[str, str]] | None = None,
     technical_notes: str = "",
 ) -> str:
-    """Update an Op's name, description, objective, repos, or technical notes.
+    """Update an Op's name, description, objective, or technical notes.
 
     Args:
         op_id: UUID of the Op
         name: New name (leave empty to keep current)
         description: New description (leave empty to keep current)
         objective: New objective (leave empty to keep current)
-        repos: New repo list, each with url, name, purpose (omit to keep current)
         technical_notes: New technical notes (leave empty to keep current)
     """
     body: dict[str, Any] = {}
@@ -634,8 +619,6 @@ async def update_op(
         body["description"] = description
     if objective:
         body["objective"] = objective
-    if repos is not None:
-        body["repos"] = repos
     if technical_notes:
         body["technical_notes"] = technical_notes
     if not body:
@@ -664,18 +647,46 @@ def _save_local_repos(data: dict[str, str]) -> None:
 
 
 @mcp.tool()
-async def set_repo_local_path(op_id: str, repo_url: str, local_path: str) -> str:
-    """Record where a repo is cloned locally for an Op.
+async def update_project(
+    project_id: str,
+    name: str = "",
+    description: str = "",
+    repos: list[dict[str, str]] | None = None,
+) -> str:
+    """Update a project's name, description, or repos.
+
+    Args:
+        project_id: UUID of the project
+        name: New name (leave empty to keep current)
+        description: New description (leave empty to keep current)
+        repos: New repo list, each with url, name, purpose (omit to keep current)
+    """
+    body: dict[str, Any] = {}
+    if name:
+        body["name"] = name
+    if description:
+        body["description"] = description
+    if repos is not None:
+        body["repos"] = repos
+    if not body:
+        return "Nothing to update — provide at least one field."
+    data = await _put(f"/projects/{project_id}", body)
+    return f"Updated project: {data['name']}"
+
+
+@mcp.tool()
+async def set_repo_local_path(project_id: str, repo_url: str, local_path: str) -> str:
+    """Record where a repo is cloned locally for a project.
 
     This lets other tools know the local path for a given repo.
 
     Args:
-        op_id: UUID of the Op
-        repo_url: The repo URL (must match one in the Op's repos list)
+        project_id: UUID of the project
+        repo_url: The repo URL (must match one in the project's repos list)
         local_path: Absolute path to the local clone
     """
     repos = _load_local_repos()
-    key = f"{op_id}:{repo_url}"
+    key = f"{project_id}:{repo_url}"
     repos[key] = local_path
     _save_local_repos(repos)
     return f"Saved: {repo_url} → {local_path}"
