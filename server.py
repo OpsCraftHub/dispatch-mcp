@@ -4,6 +4,7 @@ Exposes board CRUD as MCP tools so Claude Code / Claude Desktop
 can read and manage projects, Ops, and packets.
 """
 
+import datetime as _dt
 import json
 import os
 import time
@@ -114,6 +115,21 @@ def _fmt(data: Any) -> str:
 
 
 # ── Read Tools ───────────────────────────────────────────────
+
+
+@mcp.tool()
+async def create_project(name: str, description: str = "") -> str:
+    """Create a new project (Launch Pad).
+
+    Args:
+        name: Project name
+        description: Optional project description
+    """
+    body: dict[str, Any] = {"name": name}
+    if description:
+        body["description"] = description
+    data = await _post("/projects", body)
+    return f"Created project: {data['name']} (id: {data['id']})"
 
 
 @mcp.tool()
@@ -908,6 +924,675 @@ async def list_op_documents(op_id: str) -> str:
         size = d.get("size_bytes", 0)
         size_str = f"{size // 1024}KB" if size and size >= 1024 else f"{size}B" if size else ""
         lines.append(f"  - {d['filename']} ({d.get('content_type', 'unknown')}, {size_str}) [id: {d['id']}]")
+    return "\n".join(lines)
+
+
+# ── AI Runner Tools ──────────────────────────────────────────
+
+
+AI_DEFAULTS = {
+    "enabled": True,
+    "auto_classify": True,
+    "auto_groom": True,
+    "auto_bootstrap": True,
+    "auto_suggest": True,
+    "tone": "concise",
+    "model_tier": "haiku",
+    "classify_min_confidence": "medium",
+    "groom_max_tokens": 500,
+    "groom_max_criteria": 4,
+    "enrich_min_confidence": 0.6,
+    "monthly_budget_usd": 10.0,
+}
+
+
+@mcp.tool()
+async def get_ai_settings(project_id: str) -> str:
+    """Get AI Runner settings for a project — what's enabled, model tier, budget, etc.
+
+    Args:
+        project_id: UUID of the project
+    """
+    project = await _get(f"/projects/{project_id}")
+    raw = project.get("ai_runner_settings") or {}
+    settings = {**AI_DEFAULTS, **raw}
+
+    lines = [f"# AI Runner Settings — {project['name']}"]
+    on_off = {True: "on", False: "off"}
+    lines.append(f"\nEnabled: **{on_off[settings['enabled']]}**")
+    lines.append(f"\n## Features")
+    lines.append(f"  auto_classify: {on_off[settings['auto_classify']]}")
+    lines.append(f"  auto_groom: {on_off[settings['auto_groom']]}")
+    lines.append(f"  auto_bootstrap: {on_off[settings['auto_bootstrap']]}")
+    lines.append(f"  auto_suggest: {on_off[settings['auto_suggest']]}")
+    lines.append(f"\n## Model")
+    lines.append(f"  model_tier: {settings['model_tier']}")
+    lines.append(f"  tone: {settings['tone']}")
+    lines.append(f"\n## Quality")
+    lines.append(f"  classify_min_confidence: {settings['classify_min_confidence']}")
+    lines.append(f"  groom_max_tokens: {settings['groom_max_tokens']}")
+    lines.append(f"  groom_max_criteria: {settings['groom_max_criteria']}")
+    lines.append(f"  enrich_min_confidence: {settings['enrich_min_confidence']}")
+    lines.append(f"\n## Budget")
+    lines.append(f"  monthly_budget_usd: ${settings['monthly_budget_usd']:.2f}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def update_ai_settings(
+    project_id: str,
+    enabled: bool | None = None,
+    auto_classify: bool | None = None,
+    auto_groom: bool | None = None,
+    auto_bootstrap: bool | None = None,
+    auto_suggest: bool | None = None,
+    tone: str = "",
+    model_tier: str = "",
+    classify_min_confidence: str = "",
+    groom_max_tokens: int | None = None,
+    groom_max_criteria: int | None = None,
+    enrich_min_confidence: float | None = None,
+    monthly_budget_usd: float | None = None,
+) -> str:
+    """Update AI Runner settings for a project. Only provided fields are changed.
+
+    Args:
+        project_id: UUID of the project
+        enabled: Master kill switch — set false to disable all AI processing
+        auto_classify: Auto-classify new tickets into Ops
+        auto_groom: Auto-generate description, criteria, estimate
+        auto_bootstrap: Auto-scan repos and generate workspace context
+        auto_suggest: Auto-suggest assignees after grooming
+        tone: "concise" or "thorough" — controls AI output verbosity
+        model_tier: "haiku" (fast/cheap) or "sonnet" (smart/expensive)
+        classify_min_confidence: "low", "medium", or "high" — minimum confidence to auto-assign Op
+        groom_max_tokens: Max output tokens for groom responses (e.g. 500)
+        groom_max_criteria: Max number of acceptance criteria to generate (e.g. 4)
+        enrich_min_confidence: Minimum confidence (0.0-1.0) to use AI-enriched context
+        monthly_budget_usd: Monthly spend cap in USD (e.g. 10.0)
+    """
+    # Fetch current settings, merge with updates
+    project = await _get(f"/projects/{project_id}")
+    current = {**AI_DEFAULTS, **(project.get("ai_runner_settings") or {})}
+
+    if enabled is not None:
+        current["enabled"] = enabled
+    if auto_classify is not None:
+        current["auto_classify"] = auto_classify
+    if auto_groom is not None:
+        current["auto_groom"] = auto_groom
+    if auto_bootstrap is not None:
+        current["auto_bootstrap"] = auto_bootstrap
+    if auto_suggest is not None:
+        current["auto_suggest"] = auto_suggest
+    if tone:
+        current["tone"] = tone
+    if model_tier:
+        current["model_tier"] = model_tier
+    if classify_min_confidence:
+        current["classify_min_confidence"] = classify_min_confidence
+    if groom_max_tokens is not None:
+        current["groom_max_tokens"] = groom_max_tokens
+    if groom_max_criteria is not None:
+        current["groom_max_criteria"] = groom_max_criteria
+    if enrich_min_confidence is not None:
+        current["enrich_min_confidence"] = enrich_min_confidence
+    if monthly_budget_usd is not None:
+        current["monthly_budget_usd"] = monthly_budget_usd
+
+    await _put(f"/projects/{project_id}", {"ai_runner_settings": current})
+    return f"AI Runner settings updated for '{project['name']}'"
+
+
+@mcp.tool()
+async def get_ai_usage(project_id: str, months: int = 3) -> str:
+    """View AI Runner token spend and budget for a project.
+
+    Shows monthly breakdown of API calls, tokens used, and cost by pipeline stage.
+
+    Args:
+        project_id: UUID of the project
+        months: Number of months of history to show (default 3)
+    """
+    data = await _get(f"/projects/{project_id}/ai-usage", {"months": months})
+    if not data:
+        return "No AI usage recorded yet."
+
+    # Get budget for context
+    project = await _get(f"/projects/{project_id}")
+    raw = project.get("ai_runner_settings") or {}
+    budget = raw.get("monthly_budget_usd", AI_DEFAULTS["monthly_budget_usd"])
+
+    lines = [f"# AI Usage — {project['name']}", f"Monthly budget: ${budget:.2f}\n"]
+    for month in data:
+        ym = month["year_month"]
+        cost = month["total_cost_usd"]
+        pct = (cost / budget * 100) if budget > 0 else 0
+        lines.append(f"## {ym} — ${cost:.4f} ({pct:.0f}% of budget)")
+        lines.append(f"  Calls: {month['total_calls']} | Tokens: {month['total_input_tokens']:,} in / {month['total_output_tokens']:,} out")
+        if month.get("by_stage"):
+            for s in month["by_stage"]:
+                lines.append(f"    {s['stage']}: {s['call_count']} calls, ${s['cost_usd']:.4f}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def accept_suggestion(task_id: str) -> str:
+    """Accept the AI Runner's assignee suggestion — assigns the suggested user to the task.
+
+    Reads the ai_suggested_assignee tag, assigns that user, then clears suggestion tags.
+
+    Args:
+        task_id: UUID of the task
+    """
+    task = await _get(f"/tasks/{task_id}")
+    tags = task.get("tags") or {}
+
+    suggested_id = tags.get("ai_suggested_assignee")
+    suggested_name = tags.get("ai_suggested_assignee_name", "unknown")
+    if not suggested_id:
+        return f"No AI suggestion on '{task['title']}' — nothing to accept."
+
+    # Assign the suggested user
+    await _post(f"/tasks/{task_id}/assignees", {"user_id": suggested_id})
+
+    # Clear suggestion tags
+    for tag_key in ["ai_suggested_assignee", "ai_suggested_assignee_name", "ai_suggestion_reason"]:
+        if tag_key in tags:
+            await _delete(f"/tasks/{task_id}/tags/{tag_key}")
+
+    return f"Accepted: assigned {suggested_name} to '{task['title']}'"
+
+
+@mcp.tool()
+async def dismiss_suggestion(task_id: str) -> str:
+    """Dismiss the AI Runner's assignee suggestion — clears suggestion tags without assigning.
+
+    Args:
+        task_id: UUID of the task
+    """
+    task = await _get(f"/tasks/{task_id}")
+    tags = task.get("tags") or {}
+
+    if not tags.get("ai_suggested_assignee"):
+        return f"No AI suggestion on '{task['title']}' — nothing to dismiss."
+
+    suggested_name = tags.get("ai_suggested_assignee_name", "unknown")
+    for tag_key in ["ai_suggested_assignee", "ai_suggested_assignee_name", "ai_suggestion_reason"]:
+        if tag_key in tags:
+            await _delete(f"/tasks/{task_id}/tags/{tag_key}")
+
+    return f"Dismissed suggestion of {suggested_name} on '{task['title']}'"
+
+
+@mcp.tool()
+async def list_suggestions(project_id: str) -> str:
+    """List all pending AI assignee suggestions across a project.
+
+    Shows tasks that have AI-suggested assignees waiting for acceptance.
+
+    Args:
+        project_id: UUID of the project
+    """
+    data = await _get(f"/projects/{project_id}/tasks", {"limit": 200})
+    tasks = data.get("items", data) if isinstance(data, dict) else data
+
+    suggestions = []
+    for t in tasks:
+        tags = t.get("tags") or {}
+        if tags.get("ai_suggested_assignee"):
+            suggestions.append({
+                "task": t["title"],
+                "task_id": t["id"],
+                "status": t["workflow_status"],
+                "suggested": tags.get("ai_suggested_assignee_name", "unknown"),
+                "reason": tags.get("ai_suggestion_reason", ""),
+            })
+
+    if not suggestions:
+        return "No pending AI suggestions."
+
+    lines = [f"# Pending AI Suggestions ({len(suggestions)})"]
+    for s in suggestions:
+        lines.append(f"\n- **{s['task']}** [{s['status']}]")
+        lines.append(f"  Suggested: {s['suggested']}")
+        if s["reason"]:
+            lines.append(f"  Reason: {s['reason']}")
+        lines.append(f"  id: {s['task_id']}")
+    return "\n".join(lines)
+
+
+# ── AI Runner Trigger Tools ──────────────────────────────────
+
+
+@mcp.tool()
+async def trigger_reclassify(project_id: str, task_id: str) -> str:
+    """Re-trigger AI classification on a task — re-assigns it to the correct Op.
+
+    Use when AI classified a ticket into the wrong Op, or when
+    the task title/description has changed significantly.
+
+    Args:
+        project_id: UUID of the project
+        task_id: UUID of the task to reclassify
+    """
+    data = await _post(f"/projects/{project_id}/ai-trigger", {
+        "action": "reclassify",
+        "task_id": task_id,
+    })
+    return f"Triggered reclassify for task {task_id}"
+
+
+@mcp.tool()
+async def trigger_regroom(project_id: str, task_id: str) -> str:
+    """Re-trigger AI grooming on a task — regenerates description, criteria, estimate.
+
+    Use when requirements have changed and the AI-generated grooming is stale,
+    or when the initial groom wasn't good enough.
+
+    Args:
+        project_id: UUID of the project
+        task_id: UUID of the task to re-groom
+    """
+    data = await _post(f"/projects/{project_id}/ai-trigger", {
+        "action": "regroom",
+        "task_id": task_id,
+    })
+    return f"Triggered regroom for task {task_id}"
+
+
+@mcp.tool()
+async def trigger_reenrich(project_id: str, op_id: str) -> str:
+    """Re-trigger AI enrichment on an Op — re-maps it to relevant code files and dirs.
+
+    Use when repos have been updated or when the Op's code mapping is wrong.
+
+    Args:
+        project_id: UUID of the project
+        op_id: UUID of the Op to re-enrich
+    """
+    data = await _post(f"/projects/{project_id}/ai-trigger", {
+        "action": "reenrich",
+        "op_id": op_id,
+    })
+    return f"Triggered reenrich for Op {op_id}"
+
+
+@mcp.tool()
+async def trigger_rebootstrap(project_id: str) -> str:
+    """Re-trigger AI workspace bootstrap — re-scans repos and regenerates CLAUDE.md.
+
+    Use when repos have been added or removed from the Launch Pad,
+    or when the workspace context is stale.
+
+    Args:
+        project_id: UUID of the project
+    """
+    data = await _post(f"/projects/{project_id}/ai-trigger", {
+        "action": "rebootstrap",
+    })
+    return f"Triggered rebootstrap for project {project_id}"
+
+
+# ── Workflow Intelligence Tools ──────────────────────────────
+
+
+ESTIMATE_HOURS = {"xs": 0.5, "s": 2, "m": 4, "l": 8, "xl": 16}
+PRIORITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+
+
+@mcp.tool()
+async def pick_next_task(project_id: str, user_id: str = "") -> str:
+    """Recommend the best task to work on next — ranked by priority, urgency, and readiness.
+
+    Analyses all unblocked tasks in ready/sprint states and scores them based on
+    priority, due date proximity, estimate size, and whether they're assigned.
+
+    Args:
+        project_id: UUID of the project
+        user_id: Optional user ID to filter to tasks assigned to this user
+    """
+    board = await _get(f"/projects/{project_id}/board")
+    project_name = board["project"]["name"]
+
+    # Build Op name lookup
+    ops = await _get(f"/projects/{project_id}/sub-projects")
+    op_names = {str(op["id"]): op["name"] for op in (ops if isinstance(ops, list) else ops.get("items", []))}
+
+    # Collect candidates: tasks in actionable states that aren't blocked
+    actionable = {"ready", "sprint", "in_progress"}
+    candidates = []
+    for col in board["columns"]:
+        slug = col["state"]["slug"]
+        if slug not in actionable:
+            continue
+        for t in col["tasks"]:
+            if t.get("is_blocked"):
+                continue
+            if user_id and t.get("assignee") and t["assignee"] != user_id:
+                continue
+            candidates.append({**t, "_status": slug})
+
+    if not candidates:
+        return f"No actionable tasks found in {project_name}. Board is clear!"
+
+    # Score: lower = do first
+    # Priority: critical=0, high=10, medium=20, low=30
+    # Status: in_progress=-20 (finish what you started), sprint=-5, ready=0
+    # Due date: overdue=-50, due within 3 days=-30, due within 7 days=-10
+    # Unestimated penalty: +5 (uncertainty)
+    today = _dt.date.today()
+    scored = []
+    for t in candidates:
+        score = PRIORITY_RANK.get(t.get("priority", "medium"), 2) * 10
+
+        status = t["_status"]
+        if status == "in_progress":
+            score -= 20  # Finish what you started
+        elif status == "sprint":
+            score -= 5
+
+        due = t.get("due_date")
+        if due:
+            due_date = _dt.date.fromisoformat(due) if isinstance(due, str) else due
+            days_until = (due_date - today).days
+            if days_until < 0:
+                score -= 50  # Overdue
+            elif days_until <= 3:
+                score -= 30
+            elif days_until <= 7:
+                score -= 10
+
+        if not t.get("estimate"):
+            score += 5
+
+        scored.append((score, t))
+
+    scored.sort(key=lambda x: x[0])
+
+    # Format top 5 recommendations
+    top = scored[:5]
+    lines = [f"# Next Task Recommendations — {project_name}"]
+    if user_id:
+        lines[0] += f" (for {user_id})"
+    lines.append("")
+
+    for i, (score, t) in enumerate(top, 1):
+        status = t["_status"]
+        pri = t.get("priority", "medium")
+        est = t.get("estimate", "?")
+        assignee = t.get("assignee_name") or "unassigned"
+        due = t.get("due_date")
+
+        marker = ""
+        if status == "in_progress":
+            marker = " **[CONTINUE]**"
+        elif due:
+            due_date = _dt.date.fromisoformat(due) if isinstance(due, str) else due
+            days = (due_date - today).days
+            if days < 0:
+                marker = f" **[OVERDUE by {-days}d]**"
+            elif days <= 3:
+                marker = f" **[DUE in {days}d]**"
+
+        lines.append(f"{i}. **{t['title']}**{marker}")
+        lines.append(f"   {pri} | {est} | {status} | {assignee}")
+        if t.get("sub_project_id"):
+            op_name = op_names.get(str(t["sub_project_id"]), str(t["sub_project_id"]))
+            lines.append(f"   Op: {op_name}")
+        lines.append(f"   id: {t['id']}")
+        lines.append("")
+
+    remaining = len(scored) - 5
+    if remaining > 0:
+        lines.append(f"_+ {remaining} more tasks in backlog_")
+
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def standup_summary(project_id: str, user_id: str = "", days: int = 1) -> str:
+    """Generate a daily standup summary — what happened, what's next, blockers.
+
+    Fetches the board and recent task activity to produce a 3-section standup:
+    done (completed recently), doing (in progress), and blocked.
+
+    Args:
+        project_id: UUID of the project
+        user_id: Optional user ID to scope to one person's work
+        days: How many days back to look (default 1, use 2 for Monday standups)
+    """
+    board = await _get(f"/projects/{project_id}/board")
+    project_name = board["project"]["name"]
+
+    # Collect tasks by status
+    in_progress = []
+    in_review = []
+    blocked = []
+    recently_done = []
+
+    for col in board["columns"]:
+        slug = col["state"]["slug"]
+        for t in col["tasks"]:
+            if user_id and t.get("assignee") != user_id:
+                continue
+            if slug == "in_progress":
+                if t.get("is_blocked"):
+                    blocked.append(t)
+                else:
+                    in_progress.append(t)
+            elif slug == "review":
+                in_review.append(t)
+            elif slug in ("done", "archived"):
+                recently_done.append(t)
+
+    # For "done" tasks, try to filter to recently completed by checking events
+    # We'll fetch details for done tasks to check recency
+    confirmed_done = []
+    cutoff = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=days)
+    cutoff_str = cutoff.isoformat()
+
+    for t in recently_done[:20]:  # Cap to avoid too many requests
+        try:
+            detail = await _get(f"/tasks/{t['id']}")
+            events = detail.get("events", [])
+            for e in reversed(events):
+                if e.get("event_type") == "status_change":
+                    meta = e.get("metadata", {})
+                    if meta.get("to") in ("done", "archived"):
+                        if e.get("created_at", "") >= cutoff_str:
+                            confirmed_done.append(t)
+                        break
+        except Exception:
+            pass
+
+    # Also check sprint for "up next"
+    up_next = []
+    for col in board["columns"]:
+        if col["state"]["slug"] == "sprint":
+            for t in col["tasks"]:
+                if user_id and t.get("assignee") != user_id:
+                    continue
+                if not t.get("is_blocked"):
+                    up_next.append(t)
+
+    # Format standup
+    period = "yesterday" if days == 1 else f"last {days} days"
+    lines = [f"# Standup — {project_name}"]
+    if user_id:
+        # Resolve name from first matching task
+        name = user_id
+        for col in board["columns"]:
+            for t in col["tasks"]:
+                if t.get("assignee") == user_id and t.get("assignee_name"):
+                    name = t["assignee_name"]
+                    break
+        lines[0] += f" ({name})"
+    lines.append("")
+
+    # Done
+    lines.append(f"## Done ({period})")
+    if confirmed_done:
+        for t in confirmed_done:
+            est = f" [{t.get('estimate', '?')}]" if t.get("estimate") else ""
+            lines.append(f"  - {t['title']}{est}")
+    else:
+        lines.append("  _Nothing completed_")
+    lines.append("")
+
+    # Doing
+    lines.append("## In Progress")
+    if in_progress or in_review:
+        for t in in_progress:
+            est = f" [{t.get('estimate', '?')}]" if t.get("estimate") else ""
+            lines.append(f"  - {t['title']}{est}")
+        for t in in_review:
+            est = f" [{t.get('estimate', '?')}]" if t.get("estimate") else ""
+            lines.append(f"  - {t['title']}{est} _(in review)_")
+    else:
+        lines.append("  _Nothing in progress_")
+    lines.append("")
+
+    # Blocked
+    lines.append("## Blockers")
+    if blocked:
+        for t in blocked:
+            reason = t.get("blocked_reason") or "no reason given"
+            lines.append(f"  - **{t['title']}** — {reason}")
+    else:
+        lines.append("  _No blockers_")
+    lines.append("")
+
+    # Up next
+    if up_next:
+        lines.append("## Up Next (sprint)")
+        for t in up_next[:3]:
+            pri = t.get("priority", "medium")
+            est = f" [{t.get('estimate', '?')}]" if t.get("estimate") else ""
+            lines.append(f"  - {t['title']} ({pri}){est}")
+
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def sprint_review(project_id: str) -> str:
+    """Generate a sprint review — throughput, scope changes, health, and recommendations.
+
+    Pulls the full project summary with metrics, alerts, and Op health to produce
+    a comprehensive review suitable for team retrospectives or client updates.
+
+    Args:
+        project_id: UUID of the project
+    """
+    summary = await _get(f"/projects/{project_id}/summary")
+    project = summary["project"]
+    stats = summary["stats"]
+    alerts = summary["alerts"]
+    sprint = summary["sprint_capacity"]
+    breakdown = summary.get("workflow_breakdown", {})
+
+    lines = [f"# Sprint Review — {project['name']}"]
+    lines.append(f"_Generated: {summary['generated_at'][:10]}_\n")
+
+    # Throughput
+    lines.append("## Throughput")
+    lines.append(f"  Completed this week: **{stats['tasks_completed_this_week']}**")
+    lines.append(f"  4-week avg: **{stats['throughput_per_week']}/week**")
+    lines.append(f"  Avg cycle time: **{stats['avg_cycle_time_days']} days**")
+    lines.append(f"  Overall progress: **{project['progress_pct']}%** ({stats['completed_tasks']}/{stats['total_tasks']} tasks)")
+    lines.append("")
+
+    # Sprint load
+    lines.append("## Sprint Load")
+    lines.append(f"  Tasks in flight: **{sprint['task_count']}** ({sprint['total_hours']}h estimated)")
+    if sprint.get("by_assignee"):
+        for name, hours in sprint["by_assignee"].items():
+            lines.append(f"    {name}: {hours}h")
+    lines.append("")
+
+    # Workflow distribution
+    lines.append("## Board State")
+    for slug, count in breakdown.items():
+        if count > 0:
+            lines.append(f"  {slug}: {count}")
+    if stats.get("draft_pending_approval"):
+        lines.append(f"  drafts pending: {stats['draft_pending_approval']}")
+    lines.append("")
+
+    # Op health
+    subs = summary.get("sub_projects", [])
+    if subs:
+        lines.append("## Ops Health")
+        for sub in subs:
+            status_icon = "done" if sub["status"] == "completed" else sub["status"]
+            pct = sub.get("progress_pct", 0)
+            total = sub.get("total_tasks", 0)
+            done = sub.get("completed_tasks", 0)
+            track = ""
+            if sub.get("on_track") is not None:
+                track = " — on track" if sub["on_track"] else " — **at risk**"
+            lines.append(f"  - **{sub['name']}** [{status_icon}] {pct}% ({done}/{total}){track}")
+        lines.append("")
+
+    # Alerts
+    has_alerts = any(alerts.get(k) for k in alerts)
+    if has_alerts:
+        lines.append("## Alerts")
+        if alerts.get("overdue"):
+            lines.append(f"  **Overdue ({len(alerts['overdue'])}):**")
+            for a in alerts["overdue"][:5]:
+                lines.append(f"    - {a['title']} ({a['days_overdue']}d overdue)")
+        if alerts.get("blocked"):
+            lines.append(f"  **Stale ({len(alerts['blocked'])}):**")
+            for a in alerts["blocked"][:5]:
+                reason = f" — {a['blocked_reason']}" if a.get("blocked_reason") else ""
+                lines.append(f"    - {a['title']} ({a['days_since_movement']}d no movement){reason}")
+        if alerts.get("wip_violations"):
+            lines.append(f"  **WIP violations ({len(alerts['wip_violations'])}):**")
+            for a in alerts["wip_violations"]:
+                hard = " (HARD)" if a["hard_limit"] else ""
+                lines.append(f"    - {a['state_name']}: {a['current_count']}/{a['wip_limit']}{hard}")
+        if alerts.get("unassigned_in_sprint"):
+            lines.append(f"  **Unassigned in sprint ({len(alerts['unassigned_in_sprint'])}):**")
+            for a in alerts["unassigned_in_sprint"][:5]:
+                lines.append(f"    - {a['title']}")
+        lines.append("")
+
+    # Billing (if applicable)
+    billing = summary.get("billing", {})
+    if billing.get("total_billable_value"):
+        lines.append("## Billing")
+        lines.append(f"  Ops delivered: {billing['sub_projects_delivered']}")
+        lines.append(f"  Accepted: {billing['sub_projects_accepted']}")
+        lines.append(f"  Billing ready: {billing['sub_projects_billing_ready']} (${billing['value_billing_ready']:,.2f})")
+        lines.append(f"  Billed: {billing['sub_projects_billed']} (${billing['value_billed']:,.2f})")
+        lines.append(f"  Total billable: ${billing['total_billable_value']:,.2f}")
+        if billing.get("unbilled_accepted"):
+            lines.append("  **Unbilled but accepted:**")
+            for u in billing["unbilled_accepted"]:
+                amt = f"${u['agreed_amount']:,.2f}" if u.get("agreed_amount") else "TBD"
+                lines.append(f"    - {u['name']} ({amt})")
+        lines.append("")
+
+    # Recommendations
+    lines.append("## Recommendations")
+    recs = []
+    if alerts.get("blocked"):
+        recs.append(f"Unblock {len(alerts['blocked'])} stale task(s) — some haven't moved in 5+ days")
+    if alerts.get("unassigned_in_sprint"):
+        recs.append(f"Assign {len(alerts['unassigned_in_sprint'])} unassigned sprint task(s)")
+    if alerts.get("wip_violations"):
+        recs.append("Reduce WIP — finish in-progress work before pulling new tasks")
+    if stats.get("overdue_count"):
+        recs.append(f"Review {stats['overdue_count']} overdue task(s) — reschedule or close")
+    if stats.get("draft_pending_approval", 0) > 3:
+        recs.append(f"Review {stats['draft_pending_approval']} pending drafts")
+    if not recs:
+        recs.append("Board looks healthy — keep shipping!")
+    for r in recs:
+        lines.append(f"  - {r}")
+
     return "\n".join(lines)
 
 
