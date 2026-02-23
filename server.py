@@ -1221,10 +1221,11 @@ async def trigger_reenrich(project_id: str, op_id: str) -> str:
 
 @mcp.tool()
 async def trigger_rebootstrap(project_id: str) -> str:
-    """Re-trigger AI workspace bootstrap — re-scans repos and regenerates CLAUDE.md.
+    """Re-trigger AI workspace bootstrap — re-scans repos and regenerates CLAUDE.md + SYSTEM_SPEC.md.
 
     Use when repos have been added or removed from the Launch Pad,
-    or when the workspace context is stale.
+    or when the workspace context is stale. The system spec is the primary
+    architecture doc used by groom, classify, and implement pipelines.
 
     Args:
         project_id: UUID of the project
