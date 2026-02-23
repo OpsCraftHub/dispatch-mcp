@@ -7,7 +7,9 @@ can read and manage projects, Ops, and packets.
 import datetime as _dt
 import json
 import os
+import subprocess
 import time
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -1593,6 +1595,325 @@ async def sprint_review(project_id: str) -> str:
         recs.append("Board looks healthy — keep shipping!")
     for r in recs:
         lines.append(f"  - {r}")
+
+    return "\n".join(lines)
+
+
+# ── Local workspace scanning ─────────────────────────────────
+
+
+_LANG_MARKERS = {
+    "requirements.txt": "Python", "setup.py": "Python", "pyproject.toml": "Python",
+    "Pipfile": "Python", "package.json": "JavaScript/TypeScript", "tsconfig.json": "TypeScript",
+    "go.mod": "Go", "Cargo.toml": "Rust", "Gemfile": "Ruby", "pom.xml": "Java",
+    "build.gradle": "Java/Kotlin", "composer.json": "PHP", "mix.exs": "Elixir",
+    "pubspec.yaml": "Dart/Flutter", "*.csproj": "C#/.NET",
+}
+
+_FRAMEWORK_MARKERS = {
+    "fastapi": "FastAPI", "django": "Django", "flask": "Flask",
+    "express": "Express", "next": "Next.js", "nuxt": "Nuxt",
+    "react": "React", "vue": "Vue", "angular": "Angular",
+    "svelte": "Svelte", "astro": "Astro", "tailwindcss": "Tailwind CSS",
+    "sqlalchemy": "SQLAlchemy", "prisma": "Prisma", "drizzle": "Drizzle",
+    "alembic": "Alembic",
+}
+
+
+def _scan_local_repo(repo_path: Path) -> dict:
+    """Scan a single local repo for tech stack, structure, remote URL."""
+    result: dict[str, Any] = {
+        "name": repo_path.name,
+        "path": str(repo_path),
+        "url": "",
+        "languages": [],
+        "frameworks": [],
+        "has_tests": False,
+        "has_ci": False,
+        "has_dockerfile": False,
+        "key_dirs": [],
+        "purpose": "",
+    }
+
+    # Get git remote URL
+    try:
+        r = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            cwd=repo_path, capture_output=True, text=True, timeout=5,
+        )
+        if r.returncode == 0:
+            result["url"] = r.stdout.strip()
+    except Exception:
+        pass
+
+    # Scan top-level files for language markers
+    langs = set()
+    frameworks = set()
+    top_files = {f.name for f in repo_path.iterdir() if f.is_file()}
+    top_dirs = {d.name for d in repo_path.iterdir() if d.is_dir() and not d.name.startswith(".")}
+
+    for marker, lang in _LANG_MARKERS.items():
+        if marker in top_files:
+            langs.add(lang)
+
+    # Check package.json / requirements.txt for frameworks
+    pkg_json = repo_path / "package.json"
+    if pkg_json.exists():
+        try:
+            pkg = json.loads(pkg_json.read_text())
+            all_deps = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
+            for dep_key, fw_name in _FRAMEWORK_MARKERS.items():
+                if dep_key in all_deps:
+                    frameworks.add(fw_name)
+        except Exception:
+            pass
+
+    req_txt = repo_path / "requirements.txt"
+    if req_txt.exists():
+        try:
+            reqs = req_txt.read_text().lower()
+            for dep_key, fw_name in _FRAMEWORK_MARKERS.items():
+                if dep_key in reqs:
+                    frameworks.add(fw_name)
+        except Exception:
+            pass
+
+    pyproject = repo_path / "pyproject.toml"
+    if pyproject.exists():
+        try:
+            content = pyproject.read_text().lower()
+            for dep_key, fw_name in _FRAMEWORK_MARKERS.items():
+                if dep_key in content:
+                    frameworks.add(fw_name)
+        except Exception:
+            pass
+
+    # Detect tests, CI, Docker
+    result["has_tests"] = any(
+        d in top_dirs for d in ("tests", "test", "__tests__", "spec")
+    )
+    result["has_ci"] = (repo_path / ".github" / "workflows").is_dir()
+    result["has_dockerfile"] = "Dockerfile" in top_files or "dockerfile" in top_files
+
+    # Key directories (skip common noise)
+    skip = {"node_modules", ".git", "__pycache__", ".venv", "venv", "dist", "build", ".next", ".nuxt"}
+    result["key_dirs"] = sorted(d for d in top_dirs if d not in skip)[:15]
+
+    result["languages"] = sorted(langs)
+    result["frameworks"] = sorted(frameworks)
+    return result
+
+
+@mcp.tool()
+async def scan_local_workspace(folder_path: str) -> str:
+    """Scan a local folder for git repos and map out tech stack, structure, and remote URLs.
+
+    Point this at a folder containing your cloned repos (or a single repo).
+    Returns a summary of everything found — repos, languages, frameworks,
+    and a suggested project description. Review the output then use
+    sync_workspace_to_lp() to upload to Dispatch.
+
+    Args:
+        folder_path: Absolute path to folder containing repos (e.g. /Users/you/projects/my-app)
+    """
+    root = Path(folder_path).expanduser().resolve()
+    if not root.exists():
+        return f"Error: path does not exist: {root}"
+    if not root.is_dir():
+        return f"Error: not a directory: {root}"
+
+    repos = []
+
+    # Check if root itself is a git repo
+    if (root / ".git").is_dir():
+        repos.append(_scan_local_repo(root))
+    else:
+        # Scan immediate children for git repos
+        for child in sorted(root.iterdir()):
+            if child.is_dir() and (child / ".git").is_dir():
+                repos.append(_scan_local_repo(child))
+
+    if not repos:
+        return f"No git repos found in {root}. Make sure the folder contains cloned repositories."
+
+    # Aggregate
+    all_langs = sorted({l for r in repos for l in r["languages"]})
+    all_frameworks = sorted({f for r in repos for f in r["frameworks"]})
+
+    lines = [f"# Workspace Scan: {root.name}", f"Path: `{root}`", f"Repos found: **{len(repos)}**", ""]
+
+    # Summary
+    if all_langs:
+        lines.append(f"**Languages:** {', '.join(all_langs)}")
+    if all_frameworks:
+        lines.append(f"**Frameworks:** {', '.join(all_frameworks)}")
+    lines.append("")
+
+    # Per-repo detail
+    lines.append("## Repos")
+    for r in repos:
+        url_line = f"  URL: `{r['url']}`" if r["url"] else "  URL: _(no remote)_"
+        lines.append(f"### {r['name']}")
+        lines.append(url_line)
+        lines.append(f"  Path: `{r['path']}`")
+        if r["languages"]:
+            lines.append(f"  Languages: {', '.join(r['languages'])}")
+        if r["frameworks"]:
+            lines.append(f"  Frameworks: {', '.join(r['frameworks'])}")
+        features = []
+        if r["has_tests"]:
+            features.append("tests")
+        if r["has_ci"]:
+            features.append("CI/CD")
+        if r["has_dockerfile"]:
+            features.append("Docker")
+        if features:
+            lines.append(f"  Features: {', '.join(features)}")
+        if r["key_dirs"]:
+            lines.append(f"  Key dirs: {', '.join(r['key_dirs'][:10])}")
+        lines.append("")
+
+    # Suggested description
+    if len(repos) == 1:
+        r = repos[0]
+        desc_parts = []
+        if r["frameworks"]:
+            desc_parts.append(f"{' + '.join(r['frameworks'])} application")
+        elif r["languages"]:
+            desc_parts.append(f"{' / '.join(r['languages'])} project")
+        else:
+            desc_parts.append("Software project")
+        suggested = f"{desc_parts[0]} — {r['name']}"
+    else:
+        desc_parts = []
+        if all_frameworks:
+            desc_parts.append(f"{' + '.join(all_frameworks[:4])}")
+        elif all_langs:
+            desc_parts.append(f"{' / '.join(all_langs)}")
+        suggested = f"Multi-repo project ({len(repos)} repos): {', '.join(r['name'] for r in repos)}"
+        if desc_parts:
+            suggested += f". Stack: {desc_parts[0]}"
+
+    lines.append("## Suggested Description")
+    lines.append(f"> {suggested}")
+    lines.append("")
+    lines.append("## Next Steps")
+    lines.append("Review the above. If it looks correct, run **sync_workspace_to_lp** with:")
+    lines.append(f"- `folder_path`: `{root}`")
+    lines.append("- `project_id`: the UUID of your Launch Pad")
+    lines.append("- Optionally override the `description`")
+
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def sync_workspace_to_lp(
+    project_id: str,
+    folder_path: str,
+    description: str = "",
+    trigger_bootstrap: bool = True,
+) -> str:
+    """Upload scanned local repos to a Dispatch Launch Pad and trigger AI bootstrap.
+
+    Run scan_local_workspace() first to preview what will be uploaded.
+    This tool:
+    1. Scans the folder for git repos
+    2. Updates the LP with repo URLs, names, and description
+    3. Records local paths for each repo
+    4. Optionally triggers AI bootstrap to generate SYSTEM_SPEC.md
+
+    Args:
+        project_id: UUID of the Launch Pad to update
+        folder_path: Same path you used with scan_local_workspace
+        description: Project description (leave empty to keep current)
+        trigger_bootstrap: Whether to trigger AI bootstrap after syncing (default: true)
+    """
+    root = Path(folder_path).expanduser().resolve()
+    if not root.exists():
+        return f"Error: path does not exist: {root}"
+
+    # Scan for repos
+    scan_results = []
+    if (root / ".git").is_dir():
+        scan_results.append(_scan_local_repo(root))
+    else:
+        for child in sorted(root.iterdir()):
+            if child.is_dir() and (child / ".git").is_dir():
+                scan_results.append(_scan_local_repo(child))
+
+    if not scan_results:
+        return f"No git repos found in {root}"
+
+    # Filter to repos with remote URLs
+    repos_with_url = [r for r in scan_results if r["url"]]
+    repos_without_url = [r for r in scan_results if not r["url"]]
+
+    if not repos_with_url:
+        return (
+            "No repos with remote URLs found. All repos need a git remote (origin) "
+            "to be uploaded to Dispatch. Run `git remote add origin <url>` first."
+        )
+
+    # Build repo list for LP
+    repo_refs = []
+    for r in repos_with_url:
+        purpose_parts = []
+        if r["languages"]:
+            purpose_parts.append(", ".join(r["languages"]))
+        if r["frameworks"]:
+            purpose_parts.append(", ".join(r["frameworks"]))
+        repo_refs.append({
+            "url": r["url"],
+            "name": r["name"],
+            "purpose": " — ".join(purpose_parts) if purpose_parts else "",
+        })
+
+    # Update project with repos + optional description
+    update_body: dict[str, Any] = {"repos": repo_refs}
+    if description:
+        update_body["description"] = description
+
+    await _put(f"/projects/{project_id}", update_body)
+
+    # Record local paths
+    local_repos = _load_local_repos()
+    for r in repos_with_url:
+        key = f"{project_id}:{r['url']}"
+        local_repos[key] = r["path"]
+    _save_local_repos(local_repos)
+
+    # Trigger bootstrap
+    bootstrap_msg = ""
+    if trigger_bootstrap:
+        try:
+            await _post(f"/projects/{project_id}/ai-trigger", {
+                "action": "rebootstrap",
+            })
+            bootstrap_msg = "\nTriggered AI bootstrap — CLAUDE.md + SYSTEM_SPEC.md will be generated shortly."
+        except Exception as e:
+            bootstrap_msg = f"\nBootstrap trigger failed: {e}. You can trigger manually later."
+
+    # Summary
+    lines = [
+        f"# Synced to Dispatch",
+        f"Project: `{project_id}`",
+        f"Repos uploaded: **{len(repo_refs)}**",
+    ]
+    for ref in repo_refs:
+        lines.append(f"  - **{ref['name']}** — `{ref['url']}`")
+        if ref["purpose"]:
+            lines.append(f"    _{ref['purpose']}_")
+
+    if repos_without_url:
+        lines.append(f"\nSkipped {len(repos_without_url)} repo(s) without remote URL:")
+        for r in repos_without_url:
+            lines.append(f"  - {r['name']} (`{r['path']}`)")
+
+    if description:
+        lines.append(f"\nDescription updated: _{description}_")
+
+    lines.append(bootstrap_msg)
+    lines.append(f"\nLocal paths saved to `~/.dispatch/local_repos.json`")
 
     return "\n".join(lines)
 
