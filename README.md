@@ -1,13 +1,26 @@
-# Dispatch MCP
+# Mr. Fusion MCP
 
-MCP server for the OpsCraft Board service. Gives Claude Code and Claude Desktop full control of your projects, Ops, and packets via natural language.
+MCP servers for the OpsCraft platform. One repo, multiple servers — each module gets its own MCP entry point so users only load the tools they need.
+
+| Server | File | Purpose |
+|--------|------|---------|
+| **Dispatch** | `dispatch_server.py` | Board/project management — projects, Ops, tasks, AI Runner |
+| **Emitter** | `emitter_server.py` | Blog/CMS — posts, categories, subscribers, publishing |
+
+Shared Keycloak auth lives in `auth.py` — both servers import from it.
 
 ## Setup
 
 ### Prerequisites
 
 - [uv](https://docs.astral.sh/uv/getting-started/installation/) (Python package runner)
-- A running Board service (local or remote)
+- Running OpsCraft services (local or remote)
+
+### Clone
+
+```bash
+git clone git@github.com:OpsCraftHub/mr-fusion-mcp.git
+```
 
 ### Claude Code
 
@@ -22,71 +35,62 @@ Add to your project's `.mcp.json`:
         "run",
         "--with", "mcp[cli]>=1.26.0",
         "--with", "httpx>=0.27.0",
-        "python", "/path/to/dispatch-mcp/server.py"
+        "--python", "3.12",
+        "/path/to/mr-fusion-mcp/dispatch_server.py"
       ],
       "env": {
-        "BOARD_URL": "https://dispatch.opscraft.cc/api/v1"
+        "BOARD_URL": "https://your-instance.example.com/api/board"
       }
-    }
-  }
-}
-```
-
-Or clone and run directly:
-
-```bash
-git clone git@github.com:OpsCraftHub/dispatch-mcp.git
-```
-
-Then point `server.py` path at your clone.
-
-### Claude Desktop
-
-Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json`):
-
-```json
-{
-  "mcpServers": {
-    "dispatch": {
+    },
+    "emitter": {
       "command": "uv",
       "args": [
         "run",
         "--with", "mcp[cli]>=1.26.0",
         "--with", "httpx>=0.27.0",
-        "python", "/path/to/dispatch-mcp/server.py"
+        "--python", "3.12",
+        "/path/to/mr-fusion-mcp/emitter_server.py"
       ],
       "env": {
-        "BOARD_URL": "https://dispatch.opscraft.cc/api/v1"
+        "CMS_URL": "https://your-instance.example.com/api/cms"
       }
     }
   }
 }
 ```
 
+### Claude Desktop
+
+Same config in `~/Library/Application Support/Claude/claude_desktop_config.json`.
+
 ## Environment Variables
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `BOARD_URL` | No | `https://dispatch.opscraft.cc/api/v1` | Board service API base URL |
-| `BOARD_TOKEN` | No | — | Keycloak JWT for authenticated access. Not needed if Board runs in dev mode |
+### Dispatch (`dispatch_server.py`)
 
-### Authentication
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BOARD_URL` | `https://dispatch.opscraft.cc/api/v1` | Board API base URL |
+| `BOARD_TOKEN` | — | Static JWT fallback (not needed with Keycloak) |
 
-In **dev mode** (`DEV_MODE=true` on the Board service), no token is needed — requests are accepted without auth.
+### Emitter (`emitter_server.py`)
 
-In **production**, set `BOARD_TOKEN` to a valid Keycloak JWT. You can get one via:
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CMS_URL` | `http://localhost:8009/api/v1` | CMS API base URL |
 
-```bash
-curl -s -X POST "https://auth.opscraft.cc/realms/opscraft/protocol/openid-connect/token" \
-  -d "client_id=mr-fusion-frontend" \
-  -d "grant_type=password" \
-  -d "username=YOUR_USER" \
-  -d "password=YOUR_PASS" | jq -r '.access_token'
-```
+### Keycloak (both servers)
 
-Note: JWTs expire (default 5 minutes). For long-running use, consider a Keycloak service account with client credentials grant.
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `KEYCLOAK_URL` | — | Keycloak base URL (enables auto-auth) |
+| `KEYCLOAK_REALM` | `opscraft` | Realm name |
+| `KEYCLOAK_CLIENT_ID` | `mr-fusion-frontend` | OIDC client ID |
+| `KEYCLOAK_USERNAME` | — | Service account username |
+| `KEYCLOAK_PASSWORD` | — | Service account password |
 
-## Available Tools
+In **dev mode** no auth is needed. In **production**, set the Keycloak variables — the servers handle token refresh automatically.
+
+## Dispatch Tools
 
 ### Read
 
@@ -104,8 +108,12 @@ Note: JWTs expire (default 5 minutes). For long-running use, consider a Keycloak
 
 | Tool | Description |
 |------|-------------|
+| `create_project` | Create a new project |
 | `create_task` | Create a packet (optionally as draft) |
 | `move_task` | Move packet to new workflow status |
+| `groom_and_ready` | Groom and advance to ready |
+| `submit_for_review` | Move to review with summary |
+| `complete_task` | Complete with closing comment |
 | `add_comment` | Comment on a packet |
 | `assign_to_op` | Assign packet to an Op |
 | `create_op` | Create a new Op |
@@ -116,26 +124,72 @@ Note: JWTs expire (default 5 minutes). For long-running use, consider a Keycloak
 
 | Tool | Description |
 |------|-------------|
-| `update_task` | Update title, description, priority |
-| `block_task` | Block a packet with reason |
-| `unblock_task` | Unblock a packet |
+| `update_task` | Update title, description, priority, estimate |
+| `update_op` | Update Op details and dates |
+| `update_project` | Update project name, description, repos |
+| `block_task` / `unblock_task` | Block/unblock a packet |
 | `set_scope_flag` | Flag scope creep on a packet |
 | `merge_task` | Absorb one packet into another |
 | `set_tag` | Set key:value tag on a packet |
-| `set_project_domains` | Set auto-viewer email domains |
-| `reject_draft` | Reject draft with feedback |
-| `approve_drafts` | Bulk approve drafts to triage |
+| `reject_draft` / `approve_drafts` | Draft review workflow |
+| `delegate_criterion` | Delegate acceptance criterion to a user |
+
+### AI Runner
+
+| Tool | Description |
+|------|-------------|
+| `get_ai_settings` / `update_ai_settings` | Manage AI Runner config |
+| `get_ai_usage` | View token spend and budget |
+| `accept_suggestion` / `dismiss_suggestion` | Handle AI assignee suggestions |
+| `trigger_reclassify` / `trigger_regroom` | Re-run AI pipelines |
+| `trigger_reenrich` / `trigger_rebootstrap` | Re-scan repos and context |
+
+### Workflow Intelligence
+
+| Tool | Description |
+|------|-------------|
+| `pick_next_task` | Recommend best task to work on next |
+| `standup_summary` | Generate daily standup report |
+| `sprint_review` | Full sprint review with metrics |
+| `scan_local_workspace` | Scan local repos for tech stack |
+| `sync_workspace_to_lp` | Upload repo info to Dispatch |
+
+### Lattice (Documents)
+
+| Tool | Description |
+|------|-------------|
+| `create_document` / `read_document` / `update_document` | Doc CRUD |
+| `link_document` / `list_linked_documents` | Link docs to Board entities |
+| `search_documents` | Search documents by title |
+
+## Emitter Tools
+
+| Tool | Description |
+|------|-------------|
+| `create_blog_post` | Create a draft blog post |
+| `list_blog_posts` | List posts with optional status filter |
+| `get_blog_post` | Read full post content |
+| `update_blog_post` | Update post fields |
+| `delete_blog_post` | Delete a draft post |
+| `publish_blog_post` | Publish a draft |
+| `unpublish_blog_post` | Revert to draft |
+| `publish_blog_newsletter` | Publish + push to Signal (email) |
+| `list_blog_categories` | List all categories |
+| `create_blog_category` | Create a category |
+| `list_blog_subscribers` | List newsletter subscribers |
 
 ## Example Usage
 
 Once connected, just talk to Claude:
 
-> "Show me the board for FuelCo"
+> "Show me the board"
 
-> "Create a high priority ticket in the Infrastructure Op: Set up monitoring with Prometheus and Grafana"
-
-> "Move BOARD-080 to done"
+> "Create a high priority ticket: Set up monitoring with Prometheus"
 
 > "What's blocked right now?"
 
-> "Give me a progress report for the client"
+> "Give me a progress report"
+
+> "Write a blog post about our new feature"
+
+> "Publish the draft and send it as a newsletter"

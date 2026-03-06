@@ -8,57 +8,19 @@ import datetime as _dt
 import json
 import os
 import subprocess
-import time
 from pathlib import Path
 from typing import Any
 
 import httpx
 from mcp.server.fastmcp import FastMCP
 
-BOARD_URL = os.getenv("BOARD_URL", "https://dispatch.opscraft.cc/api/v1")
-BOARD_TOKEN = os.getenv("BOARD_TOKEN", "")  # Static token fallback
+from auth import make_auth_headers_fn
 
-# Keycloak auto-auth (set these for production)
-KC_URL = os.getenv("KEYCLOAK_URL", "")
-KC_REALM = os.getenv("KEYCLOAK_REALM", "opscraft")
-KC_CLIENT_ID = os.getenv("KEYCLOAK_CLIENT_ID", "mr-fusion-frontend")
-KC_USERNAME = os.getenv("KEYCLOAK_USERNAME", "")
-KC_PASSWORD = os.getenv("KEYCLOAK_PASSWORD", "")
+BOARD_URL = os.getenv("BOARD_URL", "https://dispatch.opscraft.cc/api/v1")
 
 mcp = FastMCP("dispatch")
 
-# ── Keycloak token cache ─────────────────────────────────────
-
-_token_cache: dict[str, Any] = {"access_token": "", "expires_at": 0}
-
-
-async def _get_token() -> str:
-    """Return a valid Bearer token. Uses Keycloak password grant if configured, else static token."""
-    if not KC_URL or not KC_USERNAME:
-        return BOARD_TOKEN
-
-    if _token_cache["access_token"] and time.time() < _token_cache["expires_at"] - 30:
-        return _token_cache["access_token"]
-
-    token_url = f"{KC_URL}/realms/{KC_REALM}/protocol/openid-connect/token"
-    async with httpx.AsyncClient() as c:
-        r = await c.post(token_url, data={
-            "grant_type": "password",
-            "client_id": KC_CLIENT_ID,
-            "username": KC_USERNAME,
-            "password": KC_PASSWORD,
-        }, timeout=10)
-        r.raise_for_status()
-        data = r.json()
-
-    _token_cache["access_token"] = data["access_token"]
-    _token_cache["expires_at"] = time.time() + data.get("expires_in", 300)
-    return data["access_token"]
-
-
-async def _auth_headers() -> dict[str, str]:
-    token = await _get_token()
-    return {"Authorization": f"Bearer {token}"} if token else {}
+_auth_headers = make_auth_headers_fn(static_token_var="BOARD_TOKEN")
 
 
 # ── HTTP helpers ─────────────────────────────────────────────
@@ -620,8 +582,10 @@ async def update_op(
     description: str = "",
     objective: str = "",
     technical_notes: str = "",
+    planned_start: str = "",
+    planned_end: str = "",
 ) -> str:
-    """Update an Op's name, description, objective, or technical notes.
+    """Update an Op's name, description, objective, technical notes, or dates.
 
     Args:
         op_id: UUID of the Op
@@ -629,6 +593,8 @@ async def update_op(
         description: New description (leave empty to keep current)
         objective: New objective (leave empty to keep current)
         technical_notes: New technical notes (leave empty to keep current)
+        planned_start: Start date in YYYY-MM-DD format (leave empty to keep current)
+        planned_end: End date in YYYY-MM-DD format (leave empty to keep current)
     """
     body: dict[str, Any] = {}
     if name:
@@ -639,10 +605,19 @@ async def update_op(
         body["objective"] = objective
     if technical_notes:
         body["technical_notes"] = technical_notes
+    if planned_start:
+        body["planned_start"] = planned_start
+    if planned_end:
+        body["planned_end"] = planned_end
     if not body:
         return "Nothing to update — provide at least one field."
     data = await _put(f"/sub-projects/{op_id}", body)
-    return f"Updated Op: {data['name']}"
+    parts = [f"Updated Op: {data['name']}"]
+    if data.get("planned_start"):
+        parts.append(f"Start: {data['planned_start']}")
+    if data.get("planned_end"):
+        parts.append(f"End: {data['planned_end']}")
+    return " | ".join(parts)
 
 
 # ── Local repo path tracking ────────────────────────────────
@@ -1281,10 +1256,6 @@ async def pick_next_task(project_id: str, user_id: str = "") -> str:
         return f"No actionable tasks found in {project_name}. Board is clear!"
 
     # Score: lower = do first
-    # Priority: critical=0, high=10, medium=20, low=30
-    # Status: in_progress=-20 (finish what you started), sprint=-5, ready=0
-    # Due date: overdue=-50, due within 3 days=-30, due within 7 days=-10
-    # Unestimated penalty: +5 (uncertainty)
     today = _dt.date.today()
     scored = []
     for t in candidates:
@@ -1292,7 +1263,7 @@ async def pick_next_task(project_id: str, user_id: str = "") -> str:
 
         status = t["_status"]
         if status == "in_progress":
-            score -= 20  # Finish what you started
+            score -= 20
         elif status == "sprint":
             score -= 5
 
@@ -1301,7 +1272,7 @@ async def pick_next_task(project_id: str, user_id: str = "") -> str:
             due_date = _dt.date.fromisoformat(due) if isinstance(due, str) else due
             days_until = (due_date - today).days
             if days_until < 0:
-                score -= 50  # Overdue
+                score -= 50
             elif days_until <= 3:
                 score -= 30
             elif days_until <= 7:
@@ -1314,7 +1285,6 @@ async def pick_next_task(project_id: str, user_id: str = "") -> str:
 
     scored.sort(key=lambda x: x[0])
 
-    # Format top 5 recommendations
     top = scored[:5]
     lines = [f"# Next Task Recommendations — {project_name}"]
     if user_id:
@@ -1369,7 +1339,6 @@ async def standup_summary(project_id: str, user_id: str = "", days: int = 1) -> 
     board = await _get(f"/projects/{project_id}/board")
     project_name = board["project"]["name"]
 
-    # Collect tasks by status
     in_progress = []
     in_review = []
     blocked = []
@@ -1390,13 +1359,11 @@ async def standup_summary(project_id: str, user_id: str = "", days: int = 1) -> 
             elif slug in ("done", "archived"):
                 recently_done.append(t)
 
-    # For "done" tasks, try to filter to recently completed by checking events
-    # We'll fetch details for done tasks to check recency
     confirmed_done = []
     cutoff = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=days)
     cutoff_str = cutoff.isoformat()
 
-    for t in recently_done[:20]:  # Cap to avoid too many requests
+    for t in recently_done[:20]:
         try:
             detail = await _get(f"/tasks/{t['id']}")
             events = detail.get("events", [])
@@ -1410,7 +1377,6 @@ async def standup_summary(project_id: str, user_id: str = "", days: int = 1) -> 
         except Exception:
             pass
 
-    # Also check sprint for "up next"
     up_next = []
     for col in board["columns"]:
         if col["state"]["slug"] == "sprint":
@@ -1420,11 +1386,9 @@ async def standup_summary(project_id: str, user_id: str = "", days: int = 1) -> 
                 if not t.get("is_blocked"):
                     up_next.append(t)
 
-    # Format standup
     period = "yesterday" if days == 1 else f"last {days} days"
     lines = [f"# Standup — {project_name}"]
     if user_id:
-        # Resolve name from first matching task
         name = user_id
         for col in board["columns"]:
             for t in col["tasks"]:
@@ -1434,7 +1398,6 @@ async def standup_summary(project_id: str, user_id: str = "", days: int = 1) -> 
         lines[0] += f" ({name})"
     lines.append("")
 
-    # Done
     lines.append(f"## Done ({period})")
     if confirmed_done:
         for t in confirmed_done:
@@ -1444,7 +1407,6 @@ async def standup_summary(project_id: str, user_id: str = "", days: int = 1) -> 
         lines.append("  _Nothing completed_")
     lines.append("")
 
-    # Doing
     lines.append("## In Progress")
     if in_progress or in_review:
         for t in in_progress:
@@ -1457,7 +1419,6 @@ async def standup_summary(project_id: str, user_id: str = "", days: int = 1) -> 
         lines.append("  _Nothing in progress_")
     lines.append("")
 
-    # Blocked
     lines.append("## Blockers")
     if blocked:
         for t in blocked:
@@ -1467,7 +1428,6 @@ async def standup_summary(project_id: str, user_id: str = "", days: int = 1) -> 
         lines.append("  _No blockers_")
     lines.append("")
 
-    # Up next
     if up_next:
         lines.append("## Up Next (sprint)")
         for t in up_next[:3]:
@@ -1498,7 +1458,6 @@ async def sprint_review(project_id: str) -> str:
     lines = [f"# Sprint Review — {project['name']}"]
     lines.append(f"_Generated: {summary['generated_at'][:10]}_\n")
 
-    # Throughput
     lines.append("## Throughput")
     lines.append(f"  Completed this week: **{stats['tasks_completed_this_week']}**")
     lines.append(f"  4-week avg: **{stats['throughput_per_week']}/week**")
@@ -1506,7 +1465,6 @@ async def sprint_review(project_id: str) -> str:
     lines.append(f"  Overall progress: **{project['progress_pct']}%** ({stats['completed_tasks']}/{stats['total_tasks']} tasks)")
     lines.append("")
 
-    # Sprint load
     lines.append("## Sprint Load")
     lines.append(f"  Tasks in flight: **{sprint['task_count']}** ({sprint['total_hours']}h estimated)")
     if sprint.get("by_assignee"):
@@ -1514,7 +1472,6 @@ async def sprint_review(project_id: str) -> str:
             lines.append(f"    {name}: {hours}h")
     lines.append("")
 
-    # Workflow distribution
     lines.append("## Board State")
     for slug, count in breakdown.items():
         if count > 0:
@@ -1523,7 +1480,6 @@ async def sprint_review(project_id: str) -> str:
         lines.append(f"  drafts pending: {stats['draft_pending_approval']}")
     lines.append("")
 
-    # Op health
     subs = summary.get("sub_projects", [])
     if subs:
         lines.append("## Ops Health")
@@ -1538,7 +1494,6 @@ async def sprint_review(project_id: str) -> str:
             lines.append(f"  - **{sub['name']}** [{status_icon}] {pct}% ({done}/{total}){track}")
         lines.append("")
 
-    # Alerts
     has_alerts = any(alerts.get(k) for k in alerts)
     if has_alerts:
         lines.append("## Alerts")
@@ -1562,7 +1517,6 @@ async def sprint_review(project_id: str) -> str:
                 lines.append(f"    - {a['title']}")
         lines.append("")
 
-    # Billing (if applicable)
     billing = summary.get("billing", {})
     if billing.get("total_billable_value"):
         lines.append("## Billing")
@@ -1578,7 +1532,6 @@ async def sprint_review(project_id: str) -> str:
                 lines.append(f"    - {u['name']} ({amt})")
         lines.append("")
 
-    # Recommendations
     lines.append("## Recommendations")
     recs = []
     if alerts.get("blocked"):
@@ -1635,7 +1588,6 @@ def _scan_local_repo(repo_path: Path) -> dict:
         "purpose": "",
     }
 
-    # Get git remote URL
     try:
         r = subprocess.run(
             ["git", "remote", "get-url", "origin"],
@@ -1646,7 +1598,6 @@ def _scan_local_repo(repo_path: Path) -> dict:
     except Exception:
         pass
 
-    # Scan top-level files for language markers
     langs = set()
     frameworks = set()
     top_files = {f.name for f in repo_path.iterdir() if f.is_file()}
@@ -1656,7 +1607,6 @@ def _scan_local_repo(repo_path: Path) -> dict:
         if marker in top_files:
             langs.add(lang)
 
-    # Check package.json / requirements.txt for frameworks
     pkg_json = repo_path / "package.json"
     if pkg_json.exists():
         try:
@@ -1688,14 +1638,12 @@ def _scan_local_repo(repo_path: Path) -> dict:
         except Exception:
             pass
 
-    # Detect tests, CI, Docker
     result["has_tests"] = any(
         d in top_dirs for d in ("tests", "test", "__tests__", "spec")
     )
     result["has_ci"] = (repo_path / ".github" / "workflows").is_dir()
     result["has_dockerfile"] = "Dockerfile" in top_files or "dockerfile" in top_files
 
-    # Key directories (skip common noise)
     skip = {"node_modules", ".git", "__pycache__", ".venv", "venv", "dist", "build", ".next", ".nuxt"}
     result["key_dirs"] = sorted(d for d in top_dirs if d not in skip)[:15]
 
@@ -1724,11 +1672,9 @@ async def scan_local_workspace(folder_path: str) -> str:
 
     repos = []
 
-    # Check if root itself is a git repo
     if (root / ".git").is_dir():
         repos.append(_scan_local_repo(root))
     else:
-        # Scan immediate children for git repos
         for child in sorted(root.iterdir()):
             if child.is_dir() and (child / ".git").is_dir():
                 repos.append(_scan_local_repo(child))
@@ -1736,20 +1682,17 @@ async def scan_local_workspace(folder_path: str) -> str:
     if not repos:
         return f"No git repos found in {root}. Make sure the folder contains cloned repositories."
 
-    # Aggregate
     all_langs = sorted({l for r in repos for l in r["languages"]})
     all_frameworks = sorted({f for r in repos for f in r["frameworks"]})
 
     lines = [f"# Workspace Scan: {root.name}", f"Path: `{root}`", f"Repos found: **{len(repos)}**", ""]
 
-    # Summary
     if all_langs:
         lines.append(f"**Languages:** {', '.join(all_langs)}")
     if all_frameworks:
         lines.append(f"**Frameworks:** {', '.join(all_frameworks)}")
     lines.append("")
 
-    # Per-repo detail
     lines.append("## Repos")
     for r in repos:
         url_line = f"  URL: `{r['url']}`" if r["url"] else "  URL: _(no remote)_"
@@ -1773,7 +1716,6 @@ async def scan_local_workspace(folder_path: str) -> str:
             lines.append(f"  Key dirs: {', '.join(r['key_dirs'][:10])}")
         lines.append("")
 
-    # Suggested description
     if len(repos) == 1:
         r = repos[0]
         desc_parts = []
@@ -1832,7 +1774,6 @@ async def sync_workspace_to_lp(
     if not root.exists():
         return f"Error: path does not exist: {root}"
 
-    # Scan for repos
     scan_results = []
     if (root / ".git").is_dir():
         scan_results.append(_scan_local_repo(root))
@@ -1844,7 +1785,6 @@ async def sync_workspace_to_lp(
     if not scan_results:
         return f"No git repos found in {root}"
 
-    # Filter to repos with remote URLs
     repos_with_url = [r for r in scan_results if r["url"]]
     repos_without_url = [r for r in scan_results if not r["url"]]
 
@@ -1854,7 +1794,6 @@ async def sync_workspace_to_lp(
             "to be uploaded to Dispatch. Run `git remote add origin <url>` first."
         )
 
-    # Build repo list for LP
     repo_refs = []
     for r in repos_with_url:
         purpose_parts = []
@@ -1868,21 +1807,18 @@ async def sync_workspace_to_lp(
             "purpose": " — ".join(purpose_parts) if purpose_parts else "",
         })
 
-    # Update project with repos + optional description
     update_body: dict[str, Any] = {"repos": repo_refs}
     if description:
         update_body["description"] = description
 
     await _put(f"/projects/{project_id}", update_body)
 
-    # Record local paths
     local_repos = _load_local_repos()
     for r in repos_with_url:
         key = f"{project_id}:{r['url']}"
         local_repos[key] = r["path"]
     _save_local_repos(local_repos)
 
-    # Trigger bootstrap
     bootstrap_msg = ""
     if trigger_bootstrap:
         try:
@@ -1893,7 +1829,6 @@ async def sync_workspace_to_lp(
         except Exception as e:
             bootstrap_msg = f"\nBootstrap trigger failed: {e}. You can trigger manually later."
 
-    # Summary
     lines = [
         f"# Synced to Dispatch",
         f"Project: `{project_id}`",
@@ -1916,6 +1851,11 @@ async def sync_workspace_to_lp(
     lines.append(f"\nLocal paths saved to `~/.dispatch/local_repos.json`")
 
     return "\n".join(lines)
+
+
+from lattice_tools import register_lattice_tools
+
+register_lattice_tools(mcp, _auth_headers)
 
 
 if __name__ == "__main__":
