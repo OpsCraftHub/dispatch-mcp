@@ -16,7 +16,7 @@ from mcp.server.fastmcp import FastMCP
 
 from auth import make_auth_headers_fn
 
-BOARD_URL = os.getenv("BOARD_URL", "https://dispatch.opscraft.cc/api/v1")
+BOARD_URL = os.getenv("BOARD_URL", "https://mr-fusion.opscraft.cc/api/board")
 
 mcp = FastMCP("dispatch")
 
