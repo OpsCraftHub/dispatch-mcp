@@ -39,7 +39,7 @@ Add to your project's `.mcp.json`:
         "/path/to/mr-fusion-mcp/dispatch_server.py"
       ],
       "env": {
-        "BOARD_URL": "https://dispatch.opscraft.cc/api/v1"
+        "BOARD_URL": "https://mr-fusion.opscraft.cc/api/v1"
       }
     },
     "emitter": {
@@ -52,7 +52,7 @@ Add to your project's `.mcp.json`:
         "/path/to/mr-fusion-mcp/emitter_server.py"
       ],
       "env": {
-        "CMS_URL": "https://dispatch.opscraft.cc/api/cms"
+        "CMS_URL": "https://mr-fusion.opscraft.cc/api/cms"
       }
     }
   }
@@ -69,7 +69,7 @@ Same config in `~/Library/Application Support/Claude/claude_desktop_config.json`
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `BOARD_URL` | `https://dispatch.opscraft.cc/api/v1` | Board API base URL |
+| `BOARD_URL` | `https://mr-fusion.opscraft.cc/api/v1` | Board API base URL |
 | `BOARD_TOKEN` | — | Static JWT fallback (not needed with Keycloak) |
 
 ### Emitter (`emitter_server.py`)
