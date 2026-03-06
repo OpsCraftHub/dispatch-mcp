@@ -39,7 +39,7 @@ Add to your project's `.mcp.json`:
         "/path/to/mr-fusion-mcp/dispatch_server.py"
       ],
       "env": {
-        "BOARD_URL": "https://your-instance.example.com/api/board"
+        "BOARD_URL": "https://dispatch.opscraft.cc/api/v1"
       }
     },
     "emitter": {
@@ -52,7 +52,7 @@ Add to your project's `.mcp.json`:
         "/path/to/mr-fusion-mcp/emitter_server.py"
       ],
       "env": {
-        "CMS_URL": "https://your-instance.example.com/api/cms"
+        "CMS_URL": "https://dispatch.opscraft.cc/api/cms"
       }
     }
   }
