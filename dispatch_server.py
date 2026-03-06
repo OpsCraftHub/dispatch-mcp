@@ -153,9 +153,12 @@ async def list_ops(project_id: str) -> str:
         psc = op.get("possible_scope_creep_count", 0)
         if sc or psc:
             scope = f" (scope: {sc} creep, {psc} unresolved)"
+        dates = ""
+        if op.get("planned_start") or op.get("planned_end"):
+            dates = f" | {op.get('planned_start', '?')}→{op.get('planned_end', '?')}"
         lines.append(
             f"- {op['name']} [{op['status']}] {op.get('progress_pct', 0)}% "
-            f"({op.get('done_tasks', 0)}/{op.get('total_tasks', 0)}){approved}{scope} — id: {op['id']}"
+            f"({op.get('done_tasks', 0)}/{op.get('total_tasks', 0)}){approved}{scope}{dates} — id: {op['id']}"
         )
     return "\n".join(lines) if lines else "No Ops found."
 
@@ -552,6 +555,11 @@ async def get_op(op_id: str) -> str:
         f"# {data['name']}",
         f"Status: {data['status']} | Progress: {data.get('progress_pct', 0)}% ({data.get('done_tasks', 0)}/{data.get('total_tasks', 0)})",
     ]
+    if data.get("planned_start") or data.get("planned_end"):
+        auto = f" ({data['auto_planned']})" if data.get("auto_planned") else ""
+        lines.append(f"Dates: {data.get('planned_start', '?')} → {data.get('planned_end', '?')}{auto}")
+    if data.get("depends_on_op_id"):
+        lines.append(f"Depends on: {data['depends_on_op_id']}")
     if data.get("approved_at"):
         lines.append(f"Approved: baseline {data.get('baseline_task_count', 0)} packets")
     if data.get("description"):
