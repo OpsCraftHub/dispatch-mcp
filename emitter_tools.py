@@ -67,6 +67,7 @@ def register_emitter_tools(mcp, auth_headers_fn):
         title: str,
         content: str = "",
         excerpt: str = "",
+        featured_image: str = "",
         tags: list[str] | None = None,
         category_ids: list[str] | None = None,
     ) -> str:
@@ -76,6 +77,7 @@ def register_emitter_tools(mcp, auth_headers_fn):
             title: Post title
             content: Markdown content
             excerpt: Short excerpt/summary
+            featured_image: URL of the featured/hero image
             tags: Optional list of tag strings
             category_ids: Optional list of category UUIDs to assign
         """
@@ -85,6 +87,8 @@ def register_emitter_tools(mcp, auth_headers_fn):
             body["content"] = content
         if excerpt:
             body["excerpt"] = excerpt
+        if featured_image:
+            body["featured_image"] = featured_image
         if tags:
             body["tags"] = tags
         if category_ids:
@@ -156,6 +160,7 @@ def register_emitter_tools(mcp, auth_headers_fn):
         title: str = "",
         content: str = "",
         excerpt: str = "",
+        featured_image: str = "",
         tags: list[str] | None = None,
         category_ids: list[str] | None = None,
     ) -> str:
@@ -166,6 +171,7 @@ def register_emitter_tools(mcp, auth_headers_fn):
             title: New title (leave empty to keep current)
             content: New markdown content (leave empty to keep current)
             excerpt: New excerpt (leave empty to keep current)
+            featured_image: URL of the featured/hero image (leave empty to keep current)
             tags: New tags list (omit to keep current)
             category_ids: New category UUIDs (omit to keep current)
         """
@@ -177,6 +183,8 @@ def register_emitter_tools(mcp, auth_headers_fn):
             body["content"] = content
         if excerpt:
             body["excerpt"] = excerpt
+        if featured_image:
+            body["featured_image"] = featured_image
         if tags is not None:
             body["tags"] = tags
         if category_ids is not None:
@@ -268,6 +276,30 @@ def register_emitter_tools(mcp, auth_headers_fn):
 
         cat = await _cms_post("/admin/categories", headers, body)
         return f"Created category: {cat['name']} (slug: {cat['slug']}, id: {cat['id']})"
+
+    @mcp.tool()
+    async def upload_post_image(
+        post_id: str,
+        image_url: str,
+        set_featured: bool = False,
+    ) -> str:
+        """Download an image from a URL and attach it to a blog post.
+
+        The image is downloaded, resized (max 1200px wide), and stored in S3/MinIO.
+        Returns the new image URL served by the CMS.
+
+        Args:
+            post_id: UUID of the post to attach the image to
+            image_url: URL of the image to download (e.g. from Ghost)
+            set_featured: If true, also sets this as the post's featured/hero image
+        """
+        headers = await auth_headers_fn()
+        body = {"url": image_url, "set_featured": set_featured}
+        result = await _cms_post(f"/admin/posts/{post_id}/images/from-url", headers, body)
+        url = result.get("url", "")
+        size = result.get("size_bytes", 0)
+        feat = " (set as featured)" if set_featured else ""
+        return f"Uploaded: {result.get('filename', '')} -> {url} ({size} bytes){feat}"
 
     @mcp.tool()
     async def list_blog_subscribers(status: str = "") -> str:

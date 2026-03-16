@@ -6,8 +6,9 @@ MCP servers for the OpsCraft platform. One repo, multiple servers — each modul
 |--------|------|---------|
 | **Dispatch** | `dispatch_server.py` | Board/project management — projects, Ops, tasks, AI Runner |
 | **Emitter** | `emitter_server.py` | Blog/CMS — posts, categories, subscribers, publishing |
+| **Forge** | `forge_server.py` | Workflow engine — templates, instances, Signal webforms |
 
-Shared Keycloak auth lives in `auth.py` — both servers import from it.
+Shared Keycloak auth lives in `auth.py` — all servers import from it.
 
 ## Setup
 
@@ -54,6 +55,20 @@ Add to your project's `.mcp.json`:
       "env": {
         "CMS_URL": "https://mr-fusion.opscraft.cc/api/cms"
       }
+    },
+    "forge": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--with", "mcp[cli]>=1.26.0",
+        "--with", "httpx>=0.27.0",
+        "--python", "3.12",
+        "/path/to/mr-fusion-mcp/forge_server.py"
+      ],
+      "env": {
+        "BOARD_URL": "https://mr-fusion.opscraft.cc/api/board",
+        "OUTBOX_URL": "https://mr-fusion.opscraft.cc/api/outbox"
+      }
     }
   }
 }
@@ -78,7 +93,15 @@ Same config in `~/Library/Application Support/Claude/claude_desktop_config.json`
 |----------|---------|-------------|
 | `CMS_URL` | `http://localhost:8009/api/v1` | CMS API base URL |
 
-### Keycloak (both servers)
+### Forge (`forge_server.py`)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BOARD_URL` | `https://mr-fusion.opscraft.cc/api/board` | Board API base URL |
+| `OUTBOX_URL` | `https://mr-fusion.opscraft.cc/api/outbox` | Signal (Outbox) API base URL |
+| `BOARD_TOKEN` | — | Static JWT fallback (not needed with Keycloak) |
+
+### Keycloak (all servers)
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -103,6 +126,7 @@ In **dev mode** no auth is needed. In **production**, set the Keycloak variables
 | `get_task` | Full packet detail with activity log |
 | `get_summary` | High-level project summary |
 | `get_progress` | Client-safe progress report per Op |
+| `list_members` | List project team members with IDs and roles |
 
 ### Write
 
@@ -115,6 +139,7 @@ In **dev mode** no auth is needed. In **production**, set the Keycloak variables
 | `submit_for_review` | Move to review with summary |
 | `complete_task` | Complete with closing comment |
 | `add_comment` | Comment on a packet |
+| `assign_task` | Assign a team member to a packet |
 | `assign_to_op` | Assign packet to an Op |
 | `create_op` | Create a new Op |
 | `approve_op` | Approve Op — baselines scope |
@@ -176,7 +201,32 @@ In **dev mode** no auth is needed. In **production**, set the Keycloak variables
 | `publish_blog_newsletter` | Publish + push to Signal (email) |
 | `list_blog_categories` | List all categories |
 | `create_blog_category` | Create a category |
+| `upload_post_image` | Upload image from URL to a post |
 | `list_blog_subscribers` | List newsletter subscribers |
+
+## Forge Tools
+
+### Templates
+
+| Tool | Description |
+|------|-------------|
+| `list_workflow_templates` | List templates on a project |
+| `create_workflow_template` | Create a reusable workflow template with steps |
+| `update_workflow_template` | Update template name, steps, fields |
+| `delete_workflow_template` | Remove a template |
+
+### Instances
+
+| Tool | Description |
+|------|-------------|
+| `create_workflow_instance` | Spin up a live workflow from a template (Op + tasks + webforms) |
+
+### Signal Webforms
+
+| Tool | Description |
+|------|-------------|
+| `create_webform` | Create a data collection form |
+| `list_webforms` | List forms with submission counts |
 
 ## Example Usage
 
@@ -193,3 +243,9 @@ Once connected, just talk to Claude:
 > "Write a blog post about our new feature"
 
 > "Publish the draft and send it as a newsletter"
+
+> "Create a sales process template with 5 steps"
+
+> "Spin up a new client onboarding workflow for Acme Corp"
+
+> "List my workflow templates"

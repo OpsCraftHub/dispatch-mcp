@@ -327,6 +327,27 @@ async def get_progress(project_id: str) -> str:
     return "\n".join(lines)
 
 
+@mcp.tool()
+async def list_members(project_id: str) -> str:
+    """List team members of a project — returns user IDs, names, and roles.
+
+    Useful before assigning tasks to find valid user IDs.
+
+    Args:
+        project_id: UUID of the project
+    """
+    data = await _get(f"/projects/{project_id}/members")
+    members = data if isinstance(data, list) else data.get("items", [])
+    if not members:
+        return "No members found for this project."
+
+    lines = [f"Project members ({len(members)}):"]
+    for m in members:
+        remit = f" — {m['remit']}" if m.get("remit") else ""
+        lines.append(f"  - {m['user_name']} [{m['role']}] (user_id: {m['user_id']}){remit}")
+    return "\n".join(lines)
+
+
 # ── Write Tools ──────────────────────────────────────────────
 
 
@@ -517,6 +538,22 @@ async def assign_to_op(task_id: str, op_id: str) -> str:
     """
     data = await _put(f"/tasks/{task_id}/assign-op", {"sub_project_id": op_id})
     return f"Assigned '{data['title']}' to Op {op_id}"
+
+
+@mcp.tool()
+async def assign_task(task_id: str, user_id: str) -> str:
+    """Assign a team member to a packet (task).
+
+    The user must be a member of the project's team. Use list_members() first
+    to find valid user IDs.
+
+    Args:
+        task_id: UUID of the task
+        user_id: UUID of the user to assign
+    """
+    await _post(f"/tasks/{task_id}/assignees", {"user_id": user_id})
+    task = await _get(f"/tasks/{task_id}")
+    return f"Assigned user {user_id} to '{task['title']}'"
 
 
 @mcp.tool()
