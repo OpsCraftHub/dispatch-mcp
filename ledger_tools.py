@@ -17,6 +17,10 @@ from typing import Any
 import httpx
 
 LEDGER_URL = os.getenv("LEDGER_URL", "http://localhost:8011/api/v1")
+# AI Runner base URL — used only by retry_ai_invoice_draft. Points at
+# the AI Runner service, NOT Ledger. Falls back to the local dev port
+# on 8002 (the runner's default).
+AI_RUNNER_URL = os.getenv("AI_RUNNER_URL", "http://localhost:8002")
 
 
 # ── HTTP helpers ──────────────────────────────────────────────
@@ -512,6 +516,32 @@ def register_ledger_tools(mcp, auth_headers_fn):
         return f"Deleted txn {txn_id}"
 
     @mcp.tool()
+    async def force_delete_bank_transaction(txn_id: str) -> str:
+        """Force-delete a bank transaction and everything linked to it.
+
+        Reverses any posted journal, drops the linked payment row (with
+        cascade to allocations), refreshes affected invoice/bill status,
+        then deletes the bank_txn. Used for cleaning up cross-format
+        import duplicates. Owner-scoped and destructive — no confirm.
+        """
+        headers = await auth_headers_fn()
+        result = await _post(f"/bank-transactions/{txn_id}/force-delete", headers, None)
+        rev_ids = result.get("reversal_journal_ids") or []
+        pay_id = result.get("deleted_payment_id")
+        inv_ids = result.get("affected_invoice_ids") or []
+        bill_ids = result.get("affected_bill_ids") or []
+        parts = [f"Force-deleted bank_txn {txn_id}"]
+        if pay_id:
+            parts.append(f"payment {pay_id}")
+        if rev_ids:
+            parts.append(f"reversal journals: {', '.join(rev_ids)}")
+        if inv_ids:
+            parts.append(f"refreshed invoices: {', '.join(inv_ids)}")
+        if bill_ids:
+            parts.append(f"refreshed bills: {', '.join(bill_ids)}")
+        return " · ".join(parts)
+
+    @mcp.tool()
     async def list_bank_rules() -> str:
         """List learned bank-description rules (auto-categorisation patterns)."""
         headers = await auth_headers_fn()
@@ -749,6 +779,42 @@ def register_ledger_tools(mcp, auth_headers_fn):
         headers = await auth_headers_fn()
         await _delete(f"/bills/{bill_id}/ai-draft", headers)
         return f"Rejected + deleted AI draft {bill_id}"
+
+    @mcp.tool()
+    async def retry_ai_invoice_draft(bill_id: str) -> str:
+        """Re-run the AI invoice pipeline against an existing ai_draft
+        bill's source email. Use after fixing pipeline code — the
+        original invoice email is re-fetched from Signal, extracted
+        fresh, contact + line accounts re-resolved, and the draft's
+        header + lines are replaced IN PLACE (no duplicates).
+
+        Requires AI_RUNNER_URL env var pointing at the AI Runner service.
+        """
+        headers = await auth_headers_fn()
+        # Fetch the bill via the authed endpoint to get message_id + org.
+        bill = await _get(f"/bills/{bill_id}", headers)
+        message_id = bill.get("source_email_message_id")
+        if not message_id:
+            raise Exception(
+                f"Bill {bill_id} has no source_email_message_id — nothing to retry against"
+            )
+        org_id = bill.get("org_id")
+        if not org_id:
+            raise Exception(f"Bill {bill_id} missing org_id — cannot retry")
+        async with httpx.AsyncClient(timeout=120) as c:
+            r = await c.post(
+                f"{AI_RUNNER_URL.rstrip('/')}/api/v1/watcher_invoice/retry",
+                json={"bill_id": bill_id, "message_id": str(message_id), "org_id": str(org_id)},
+                headers={"X-Internal-Service": "true"},
+            )
+            if not r.is_success:
+                try:
+                    detail = r.json()
+                except Exception:
+                    detail = r.text[:400]
+                raise Exception(f"AI Runner {r.status_code}: {detail}")
+            out = r.json()
+        return f"Retry {out.get('status')}: {out.get('summary')}"
 
     # ── Payments ──────────────────────────────────────────────
 
