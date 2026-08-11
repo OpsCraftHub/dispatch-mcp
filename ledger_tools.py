@@ -1136,3 +1136,204 @@ def register_ledger_tools(mcp, auth_headers_fn):
         for e in rows:
             lines.append(f"  {e.get('created_at','?')}  {e.get('event_name','?'):26}  {e.get('entity_type','?')}  actor={e.get('actor_id','?')}")
         return "\n".join(lines)
+
+    # ── Document templates (per-doc-type branding) ────────────
+
+    _DOC_TYPES = ("invoice", "quote", "job_card", "purchase_order", "credit_note")
+
+    def _check_doc_type(dt: str) -> None:
+        if dt not in _DOC_TYPES:
+            raise Exception(f"Invalid doc_type '{dt}'. Expected one of: {', '.join(_DOC_TYPES)}")
+
+    @mcp.tool()
+    async def list_document_templates() -> str:
+        """List all per-doc-type branding templates configured for the org.
+
+        Returns one line per template (invoice, quote, job_card, purchase_order,
+        credit_note). Doc types without a template row are omitted.
+        """
+        headers = await auth_headers_fn()
+        rows = await _get("/document-templates", headers)
+        if not rows:
+            return "No document templates configured. Use update_document_template to set one."
+        lines = [f"{len(rows)} template(s):"]
+        for r in rows:
+            has_logo = " [logo]" if r.get("logo_key") else ""
+            colour = f" colour={r['primary_color']}" if r.get("primary_color") else ""
+            lines.append(f"  {r.get('doc_type','?'):15}{colour}{has_logo}")
+        return "\n".join(lines)
+
+    @mcp.tool()
+    async def get_document_template(doc_type: str) -> str:
+        """Fetch the branding template for one doc type.
+
+        Args:
+            doc_type: invoice | quote | job_card | purchase_order | credit_note
+        """
+        _check_doc_type(doc_type)
+        headers = await auth_headers_fn()
+        r = await _get(f"/document-templates/{doc_type}", headers)
+        lines = [f"Template: {doc_type}"]
+        for k in ("primary_color", "header_text", "intro_text", "footer_text",
+                  "terms_conditions", "bank_details", "payment_instructions",
+                  "email_subject_template", "email_body_template"):
+            v = r.get(k)
+            if v:
+                preview = v if len(str(v)) <= 80 else str(v)[:77] + "..."
+                lines.append(f"  {k}: {preview}")
+        if r.get("logo_key"):
+            lines.append(f"  logo_key: {r['logo_key']}")
+        return "\n".join(lines) if len(lines) > 1 else f"Template '{doc_type}' is empty (no fields set)."
+
+    @mcp.tool()
+    async def update_document_template(
+        doc_type: str,
+        header_text: str = "",
+        intro_text: str = "",
+        footer_text: str = "",
+        terms_conditions: str = "",
+        bank_details: str = "",
+        payment_instructions: str = "",
+        primary_color: str = "",
+        email_subject_template: str = "",
+        email_body_template: str = "",
+    ) -> str:
+        """Upsert branding + text for one doc type. Empty fields are left unchanged.
+
+        Args:
+            doc_type: invoice | quote | job_card | purchase_order | credit_note
+            header_text: Company name / heading printed at the top of the PDF
+            intro_text: Short paragraph shown above the line items
+            footer_text: Footer line (e.g. registration + VAT numbers)
+            terms_conditions: Free-form T&Cs printed at the bottom
+            bank_details: Bank name / account / branch code for payment
+            payment_instructions: E.g. "Please use invoice number as reference"
+            primary_color: Hex colour (e.g. "#e25c00") used for accents in the PDF
+            email_subject_template: Subject template for send-by-email flow
+            email_body_template: Body template for send-by-email flow
+        """
+        _check_doc_type(doc_type)
+        headers = await auth_headers_fn()
+        body: dict[str, Any] = {}
+        for k, v in {
+            "header_text": header_text, "intro_text": intro_text,
+            "footer_text": footer_text, "terms_conditions": terms_conditions,
+            "bank_details": bank_details, "payment_instructions": payment_instructions,
+            "primary_color": primary_color,
+            "email_subject_template": email_subject_template,
+            "email_body_template": email_body_template,
+        }.items():
+            if v:
+                body[k] = v
+        if not body:
+            return "Nothing to update — provide at least one field."
+        r = await _put(f"/document-templates/{doc_type}", headers, body)
+        return f"Updated {doc_type} template ({len(body)} field(s) set)."
+
+    @mcp.tool()
+    async def upload_document_template_logo(doc_type: str, file_path: str) -> str:
+        """Upload a logo for one doc type (PNG or JPG, ≤2MB).
+
+        The file is read from this machine and uploaded via multipart. SVG /
+        GIF / WEBP are rejected — the PDF renderer only embeds PNG/JPG.
+
+        Args:
+            doc_type: invoice | quote | job_card | purchase_order | credit_note
+            file_path: Absolute path to a .png / .jpg / .jpeg on this machine
+        """
+        _check_doc_type(doc_type)
+        p = Path(file_path).expanduser()
+        if not p.exists():
+            raise Exception(f"File not found: {p}")
+        ext = p.suffix.lower()
+        mime = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}.get(ext)
+        if not mime:
+            raise Exception(f"Unsupported logo format '{ext}'. Use .png, .jpg or .jpeg.")
+        if p.stat().st_size > 2 * 1024 * 1024:
+            raise Exception("Logo must be under 2MB.")
+        headers = await auth_headers_fn()
+        with p.open("rb") as fh:
+            files = {"file": (p.name, fh.read(), mime)}
+        r = await _post_multipart(f"/document-templates/{doc_type}/logo", headers, files)
+        return f"Uploaded logo for {doc_type} template (key: {r.get('logo_key','?')})."
+
+    @mcp.tool()
+    async def delete_document_template_logo(doc_type: str) -> str:
+        """Remove the logo from one doc type's template.
+
+        Args:
+            doc_type: invoice | quote | job_card | purchase_order | credit_note
+        """
+        _check_doc_type(doc_type)
+        headers = await auth_headers_fn()
+        await _delete(f"/document-templates/{doc_type}/logo", headers)
+        return f"Cleared logo for {doc_type} template."
+
+    # ── Ledger settings (org-level config) ────────────────────
+
+    @mcp.tool()
+    async def get_settings() -> str:
+        """Fetch org-level Ledger settings (VAT, currency, financial year, AI auto-approve)."""
+        headers = await auth_headers_fn()
+        r = await _get("/settings", headers)
+        lines = ["Ledger settings:"]
+        for k in ("org_trading_name", "org_registration_number",
+                  "base_currency", "default_vat_rate",
+                  "vat_registered", "vat_number", "vat_category", "vat_period_start",
+                  "financial_year_end",
+                  "ai_auto_approve_enabled", "ai_auto_approve_confidence_threshold"):
+            if k in r:
+                lines.append(f"  {k}: {r[k]}")
+        return "\n".join(lines)
+
+    @mcp.tool()
+    async def update_settings(
+        default_vat_rate: str = "",
+        vat_registered: bool | None = None,
+        vat_number: str = "",
+        vat_category: str = "",
+        vat_period_start: str = "",
+        financial_year_end: str = "",
+        base_currency: str = "",
+        org_trading_name: str = "",
+        org_registration_number: str = "",
+        ai_auto_approve_enabled: bool | None = None,
+        ai_auto_approve_confidence_threshold: str = "",
+    ) -> str:
+        """Patch org Ledger settings. Empty strings / None are left unchanged.
+
+        Args:
+            default_vat_rate: Default VAT rate as decimal string (e.g. "0.15" for 15%)
+            vat_registered: Whether the org is VAT-registered
+            vat_number: SARS VAT registration number
+            vat_category: monthly | cat_a | cat_b | cat_c | annual
+            vat_period_start: First day of the current VAT period, YYYY-MM-DD
+            financial_year_end: Financial year end, MM-DD (e.g. "02-28")
+            base_currency: 3-letter ISO code (e.g. "ZAR")
+            org_trading_name: Legal trading name printed on documents
+            org_registration_number: Company registration number
+            ai_auto_approve_enabled: Auto-approve AI-drafted bills above the confidence threshold
+            ai_auto_approve_confidence_threshold: Confidence floor as decimal string (e.g. "0.85")
+        """
+        headers = await auth_headers_fn()
+        body: dict[str, Any] = {}
+        for k, v in {
+            "vat_number": vat_number, "vat_category": vat_category,
+            "vat_period_start": vat_period_start, "financial_year_end": financial_year_end,
+            "base_currency": base_currency, "org_trading_name": org_trading_name,
+            "org_registration_number": org_registration_number,
+        }.items():
+            if v:
+                body[k] = v
+        if default_vat_rate:
+            body["default_vat_rate"] = float(default_vat_rate)
+        if ai_auto_approve_confidence_threshold:
+            body["ai_auto_approve_confidence_threshold"] = float(ai_auto_approve_confidence_threshold)
+        if vat_registered is not None:
+            body["vat_registered"] = vat_registered
+        if ai_auto_approve_enabled is not None:
+            body["ai_auto_approve_enabled"] = ai_auto_approve_enabled
+        if not body:
+            return "Nothing to update — provide at least one field."
+        r = await _put("/settings", headers, body)
+        return f"Updated settings ({len(body)} field(s)). Current: base_currency={r.get('base_currency')}, default_vat_rate={r.get('default_vat_rate')}, vat_registered={r.get('vat_registered')}"

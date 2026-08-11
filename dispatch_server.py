@@ -328,6 +328,48 @@ async def get_progress(project_id: str) -> str:
 
 
 @mcp.tool()
+async def get_op_dashboard(op_id: str) -> str:
+    """Op-level burndown / burnup dashboard — velocity, ETA, health, recent scope changes.
+
+    Returns the Board's dashboard payload for one Op: total vs done tasks,
+    the burnup series (weekly snapshots of scope + completed), velocity in
+    packets/week, projected weeks remaining, scope added and completed in
+    the last 7 days, and days since anything last moved.
+
+    Args:
+        op_id: UUID of the Op (sub-project)
+    """
+    d = await _get(f"/sub-projects/{op_id}/dashboard")
+    lines = [
+        f"# {d.get('op_name','?')}",
+        f"Progress: {d.get('done_tasks',0)}/{d.get('total_tasks',0)} packets ({d.get('progress_pct',0)}%)",
+    ]
+    health = d.get("health") or {}
+    if health:
+        lines.append(f"Health:   {health.get('label','?')} — {health.get('detail','')}")
+    vel = d.get("velocity_per_week")
+    weeks_left = d.get("weeks_remaining")
+    if vel is not None:
+        eta = f", ETA ~{weeks_left} weeks" if weeks_left is not None else ""
+        lines.append(f"Velocity: {vel} packets/week{eta}")
+    lines.append(
+        f"Last 7d:  +{d.get('scope_added_last_7d',0)} scope, "
+        f"{d.get('completed_last_7d',0)} completed"
+    )
+    if d.get("days_since_last_move") is not None:
+        lines.append(f"Idle:     {d['days_since_last_move']} days since last movement")
+    burnup = d.get("burnup") or []
+    if burnup:
+        lines.append("\nBurnup (week → scope / done):")
+        for pt in burnup:
+            wk = pt.get("week") or pt.get("date") or "?"
+            scope = pt.get("scope") if "scope" in pt else pt.get("total_tasks", "?")
+            done = pt.get("done") if "done" in pt else pt.get("done_tasks", "?")
+            lines.append(f"  {wk}  scope={scope}  done={done}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
 async def list_members(project_id: str) -> str:
     """List team members of a project — returns user IDs, names, and roles.
 
@@ -1899,8 +1941,10 @@ async def sync_workspace_to_lp(
 
 
 from lattice_tools import register_lattice_tools
+from chrono_tools import register_chrono_tools
 
 register_lattice_tools(mcp, _auth_headers)
+register_chrono_tools(mcp, _auth_headers)
 
 
 if __name__ == "__main__":
