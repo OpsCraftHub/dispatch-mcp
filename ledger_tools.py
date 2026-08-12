@@ -1278,6 +1278,7 @@ def register_ledger_tools(mcp, auth_headers_fn):
         r = await _get("/settings", headers)
         lines = ["Ledger settings:"]
         for k in ("org_trading_name", "org_registration_number",
+                  "company_address", "company_email", "company_phone",
                   "base_currency", "default_vat_rate",
                   "vat_registered", "vat_number", "vat_category", "vat_period_start",
                   "financial_year_end",
@@ -1297,6 +1298,9 @@ def register_ledger_tools(mcp, auth_headers_fn):
         base_currency: str = "",
         org_trading_name: str = "",
         org_registration_number: str = "",
+        company_address: str = "",
+        company_email: str = "",
+        company_phone: str = "",
         ai_auto_approve_enabled: bool | None = None,
         ai_auto_approve_confidence_threshold: str = "",
     ) -> str:
@@ -1312,6 +1316,9 @@ def register_ledger_tools(mcp, auth_headers_fn):
             base_currency: 3-letter ISO code (e.g. "ZAR")
             org_trading_name: Legal trading name printed on documents
             org_registration_number: Company registration number
+            company_address: Registered office address (multiline; \n between lines) — appears in the supplier block on invoices/quotes
+            company_email: Supplier contact email printed in the supplier block
+            company_phone: Supplier contact phone printed in the supplier block
             ai_auto_approve_enabled: Auto-approve AI-drafted bills above the confidence threshold
             ai_auto_approve_confidence_threshold: Confidence floor as decimal string (e.g. "0.85")
         """
@@ -1322,6 +1329,8 @@ def register_ledger_tools(mcp, auth_headers_fn):
             "vat_period_start": vat_period_start, "financial_year_end": financial_year_end,
             "base_currency": base_currency, "org_trading_name": org_trading_name,
             "org_registration_number": org_registration_number,
+            "company_address": company_address, "company_email": company_email,
+            "company_phone": company_phone,
         }.items():
             if v:
                 body[k] = v
